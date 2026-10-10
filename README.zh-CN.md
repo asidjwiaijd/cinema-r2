@@ -96,7 +96,36 @@ React 管理台对资源、屏幕修改和移除使用同等认证的 POST `/upd
 
 每个客户端同时解码最近的一路节目；同一路节目、近似同一进度的多块屏幕共享纹理。不同节目的屏幕以最近屏幕为优先。游戏画面可调 1280×720 或 1920×1080，按媒体帧率播放，libmpv 系统音频输出，距离衰减；暂不提供字幕、全员准备倒计时或 MC 音量滑杆集成。
 
+## MC 服务端接入现有网站后台
+
+希望将自己的 MC 服务端接入现有 `https://live.mc.acgzjd.cn`（备用 `https://live.al.mc.acgzjd.cn`）后台时，先联系维护者申请接入，由维护者私下交付桥接令牌，并确认切换时间。**当前后台同时只支持一个活动中的 MC 服务端**：已有实例在线时，另一实例收到 `409 控制台已连接另一个 MC 服务端`；更换 `serverId` 只改变显示名称，不能实现多服务器隔离。
+
+1. 安装 Minecraft 1.21.1 Fabric 服务端、Fabric API 和 `cinema-r2-0.3.0.jar`，用 Java 21 启动一次生成配置，再正常停止。
+2. 在 MC 服务端工作目录的 `config/cinemar2-server.json` 填写下面配置。地址用域名根地址，不加 `/api`；真实令牌必须替换示例。
+
+```json
+{
+  "allowedMediaHosts": ["video.mc.cxmlbt-tec.top", "live.mc.acgzjd.cn", "live.al.mc.acgzjd.cn"],
+  "viewDistance": 64,
+  "managementUrl": "https://live.mc.acgzjd.cn",
+  "managementFallbackUrl": "https://live.al.mc.acgzjd.cn",
+  "managementToken": "替换为维护者私下提供的桥接令牌",
+  "serverId": "my-cinema",
+  "allowLocalMedia": false,
+  "protectCinema": true
+}
+```
+
+3. 服务端需能出站访问管理域名 HTTPS/443，不需要暴露一个供后台调用的 HTTP 控制端口。维护者停止原 MC 服务端后，后台约 6 秒无旧心跳才允许切换；随后启动自己的实例，由维护者检查网页「Minecraft 已连接」、服务端名称与屏幕状态。配置改动后需重启 MC。没有屏幕时可在网页创建，随后选择素材、发送到屏幕并播放。
+4. 观众使用该实例的 MC 游戏地址进服，客户端安装相同模组、Fabric API、Java 21 和 libmpv 原生库；客户端默认媒体地址已是上述 R2/EO/阿里云域名，已有旧配置需核对。网站地址用于管理及媒体，不能替代游戏进服地址。MC 服务端无需 R2 凭据、网页登录密码或 libmpv。
+
+MC `managementToken` 必须匹配网站后台私有 `settings.json` 的 `bridgeToken`；源代码与 Release 没有维护者真实令牌。网页控制另需向维护者申请网站管理密码。桥接令牌可接入整个后台，没有按服务器划分权限；不要在 GitHub、聊天群或给玩家的配置中公开它。未授权时接口返回 `401 Bridge 未授权`；空令牌或空管理地址时模组不发起连接。持有正确令牌也不能绕过上述单活动实例限制。
+
+接入前确认 `protectCinema=true` 适合自己的世界：它开启专用影院的创造模式、固定晴朗傍晚和全服务端建造/实体/爆炸保护。连接网站不会自动搭建场景；网页「搭建/重建场景」会覆盖主屏周围有限区域，先备份世界再执行。若需多台独立 MC 服务器同时接入，须扩展后台；当前版不能仅靠复制配置实现。
+
 ## 其他机器开发与部署
+
+以下用于自建网站后台。独立部署应使用自己生成的桥接令牌，并替换管理域名、媒体域名和客户端默认地址；不要将自己的后台令牌误填到项目维护者的网站地址。
 
 运行环境：Node 22.12+（本机用 24）、Java 21、FFmpeg/FFprobe。管理台与直播转码需要 FFmpeg；MC 观众客户端需要 libmpv 原生库；服务端不需要 libmpv。MC 专用服务端只同步控制数据，不拉取电影。
 
@@ -111,17 +140,20 @@ npm start
 
 ```json
 {
-  "allowedMediaHosts": ["video.mc.cxmlbt-tec.top", "live.mc.acgzjd.cn", "live.al.mc.acgzjd.cn"],
+  "allowedMediaHosts": ["r2.example.com", "cinema.example.com", "backup.example.com"],
   "viewDistance": 64,
-  "managementUrl": "https://live.mc.acgzjd.cn",
-  "managementFallbackUrl": "https://live.al.mc.acgzjd.cn",
-  "managementToken": "填写本机生成的 bridgeToken",
+  "managementUrl": "https://cinema.example.com",
+  "managementFallbackUrl": "https://backup.example.com",
+  "managementToken": "填写自己的后台生成的 bridgeToken",
   "serverId": "主影院",
-  "allowLocalMedia": false
+  "allowLocalMedia": false,
+  "protectCinema": true
 }
 ```
 
-`allowLocalMedia` 仅允许回环 3210 端口用于联调；远程媒体应使用 HTTPS。服务端和观众只需相同的 `cinema-r2-0.2.9.jar`、Fabric API 与相应运行环境。**不要分发管理端 `.data` 或含 bridgeToken 的服务端配置。** 客户端 `cinemar2-client.json` 中配置 `mpvLibraryPath`（本机为 `E:/mc/runtime/libmpv-20261009/libmpv-2.dll`）、`volume` 和缓存参数。旧 `ffmpegPath`、`bufferSeconds` 不再控制 MC 播放。
+上面的 `example.com` 地址须替换为自己的 HTTPS 域名；没有备用管理入口时将 `managementFallbackUrl` 留空。客户端 `config/cinemar2-client.json` 的 `primaryMediaBase`、`cdnMediaBase`、`backupMediaBase` 也须对应自己的 R2 和 CDN 媒体入口，后台的媒体地址、CORS 与受信任来源一并按自己的部署配置。
+
+`allowLocalMedia` 仅允许回环 3210 端口用于联调；远程媒体应使用 HTTPS。服务端和观众只需相同的 `cinema-r2-0.3.0.jar`、Fabric API 与相应运行环境。**不要分发管理端 `.data` 或含 bridgeToken 的服务端配置。** 客户端 `cinemar2-client.json` 中配置 `mpvLibraryPath`（本机为 `E:/mc/runtime/libmpv-20261009/libmpv-2.dll`）、`volume` 和缓存参数。旧 `ffmpegPath`、`bufferSeconds` 不再控制 MC 播放。
 
 Windows x64 可运行 `tools/install_libmpv.ps1` 下载固定版本并核对 SHA256，需要已安装 7-Zip；也可从 [mpv 安装页](https://mpv.io/installation/) 指向的 Windows 构建下载 **mpv-dev** 包，解压后将 `mpvLibraryPath` 指向 `libmpv-2.dll`。不会只安装 mpv.exe。JNA 绑定随模组 JAR 打包；原生库不包含在 JAR 中。第三方来源见 `THIRD_PARTY.md`。
 

@@ -14,6 +14,40 @@
 - [验证记录及实际限制](VALIDATION.md)
 - [第三方运行库与许可证](THIRD_PARTY.md)
 
+## MC 服务端接入现有网站后台
+
+如果希望自己的 MC 服务端由项目维护者现有的网站控制，先联系维护者申请接入，取得**私下提供的桥接令牌**并确认切换安排。当前后台只接受一个活动中的 MC 服务端；已有服务端在线时，另一个实例会收到 `409 控制台已连接另一个 MC 服务端`。设置不同的 `serverId` 不能实现多服务器隔离。
+
+1. 安装 Minecraft 1.21.1 Fabric 服务端、匹配的 Fabric API 和 `cinema-r2-0.3.0.jar`。MC 服务端不需要 libmpv、R2 密钥或网站登录密码。
+2. 启动一次生成配置，正常停止服务端，然后编辑其工作目录下的 `config/cinemar2-server.json`：
+
+```json
+{
+  "allowedMediaHosts": [
+    "video.mc.cxmlbt-tec.top",
+    "live.mc.acgzjd.cn",
+    "live.al.mc.acgzjd.cn"
+  ],
+  "viewDistance": 64,
+  "managementUrl": "https://live.mc.acgzjd.cn",
+  "managementFallbackUrl": "https://live.al.mc.acgzjd.cn",
+  "managementToken": "替换为维护者私下提供的桥接令牌",
+  "serverId": "my-cinema",
+  "allowLocalMedia": false,
+  "protectCinema": true
+}
+```
+
+3. 将 `managementToken` 替换为真实令牌，`serverId` 改成便于识别的服务端名称。管理地址填写域名根地址，不加 `/api` 或 `/api/bridge/poll`；模组会自动调用该接口。放行服务端到两个管理域名的出站 HTTPS（443），无须向网站开放 MC 的 HTTP 控制端口。
+4. 由维护者停止原来连接的 MC 服务端；后台超过约 6 秒没有收到原实例心跳后允许新实例连接。启动自己的服务端，由维护者确认网站显示「Minecraft 已连接」和正确的服务端名称，再在网页创建/管理该世界的屏幕、选择资源并播放。重启服务端可读取修改后的配置。
+5. 观众连接的是**你的 MC 游戏地址**，不是网站域名；他们需要同版本模组、Fabric API、Java 21 和单独安装的 libmpv。玩家客户端默认已经配置上述 R2/EO/阿里云媒体域名，旧客户端配置也应与之保持一致。影片和直播由各客户端下载，MC 服务端只同步控制与状态。
+
+`managementToken` 对应网站后台 `settings.json` 的 `bridgeToken`，两者必须一致；空值、未替换的示例或错误令牌无法接入。网页控制另需网站管理密码，是否提供由维护者决定。**桥接令牌具有整个后台的 MC 接入权限，不是每个服务器独立的有限权限；不要公开令牌、带令牌的配置或发给普通观众。** 同时接入多个独立 MC 服务器需要先扩展后台，当前版本不支持。
+
+`protectCinema=true` 会启用专用影院服务器的创造模式、固定时间天气和整个服务端的建造/实体/爆炸保护；接入前请确认适合自己的世界。「搭建/重建场景」会替换主屏周围地形，应先备份世界。接入后台本身不会自动搭建 50 座场景。
+
+如需自行搭建网站，按 [自建后台步骤](README.zh-CN.md#其他机器开发与部署) 创建自己的后台及 `bridgeToken`，并将管理地址、媒体域名和客户端配置一起替换为自己的，不使用维护者后台的令牌。
+
 ## 构建
 
 需要 Java 21、Node.js 24 和 FFmpeg/FFprobe。Windows：
