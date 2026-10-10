@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "cinemar2",
+  "version": "${version}",
+  "name": "Cinema R2",
+  "description": "Web-controlled multiplayer cinema with direct R2 VOD and RTMP-to-HLS live playback.",
+  "authors": ["Cinema R2 contributors"],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": { "main": ["dev.cinemar2.CinemaMod"], "client": ["dev.cinemar2.client.CinemaClient"] },
+  "mixins": ["cinemar2.mixins.json"],
+  "depends": { "fabricloader": ">=0.16.10", "minecraft": "1.21.1", "java": ">=21", "fabric-api": "*" }
+}

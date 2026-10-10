@@ -1,0 +1,2 @@
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+MEDIA_TOKEN=replace-with-at-least-32-random-characters

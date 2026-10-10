@@ -1,0 +1,107 @@
+import {test, before, after} from "node:test";
+import assert from "node:assert/strict";
+import {mkdtemp, writeFile, readFile, rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join, dirname, basename} from "node:path";
+import {scryptSync} from "node:crypto";
+import {createServer} from "node:http";
+import {spawn} from "node:child_process";
+const base="http://127.0.0.1:32712";
+let dir, child, agent, cookie, token, stopped=0;
+before(async()=>{
+  dir=await mkdtemp(join(tmpdir(),"cinema-remote-"));
+  await writeFile(join(dir,"auth.json"),JSON.stringify({salt:"test-salt",hash:scryptSync("test-password","test-salt",64).toString("hex")}));
+  agent=createServer((req,res)=>{
+    if(req.url.startsWith("/live/")){res.setHeader("Content-Type","application/vnd.apple.mpegurl");res.end("#EXTM3U\n#EXTINF:4,\nsegment001.ts\n");return;}
+    if(req.url==="/api/live/stop")stopped++;
+    res.setHeader("Content-Type","application/json");res.end(JSON.stringify(req.url==="/api/state"?{live:{ready:true,publishing:true,listening:true}}:{ok:true,key:"fixture-key"}));
+  });
+  await new Promise(r=>agent.listen(32713,"127.0.0.1",r));
+  child=spawn(process.execPath,["server/index.mjs"],{env:{...process.env,PORT:"32712",CINEMA_DATA:dir,CINEMA_PUBLIC_ORIGIN:base,CINEMA_ALLOWED_ORIGINS:"https://live.mc.acgzjd.cn",CINEMA_AUTH_FILE:join(dir,"auth.json"),CINEMA_LIVE_AGENT_URL:"http://127.0.0.1:32713"},stdio:"ignore",windowsHide:true});
+  for(let i=0;i<100;i++){try{if((await fetch(base+"/api/state")).status===401)break;}catch{}await new Promise(r=>setTimeout(r,100));}
+  token=JSON.parse(await readFile(join(dir,"settings.json"),"utf8")).bridgeToken;
+});
+
+test('player operations require login; server-issued identity separates route usage and rejects forgery',async()=>{
+ for(const path of ['/api/players','/api/traffic','/api/traffic/export'])assert.equal((await call(path)).status,401);
+ const login=await call('/api/auth/login',{password:'test-password'});cookie=login.headers.get('set-cookie').split(';')[0];
+ const admin={Cookie:cookie},bridge={Authorization:'Bearer '+token};
+ const uuid='12345678-1234-1234-1234-123456789abc';
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'ban'})).status,401);
+ const player={uuid,name:'FixtureViewer',connectionId:'connection-a',joinedAt:Date.now(),ping:42,dimension:'minecraft:overworld',x:1,y:100,z:1,gameMode:'survival'};
+ const poll=await(await call('/api/bridge/poll',{players:[player],bans:[],screens:[],acks:[]},bridge)).json();
+ assert.equal(poll.playerClaims.length,1);
+ const roster=await(await call('/api/players',undefined,admin)).json();assert.equal(roster.players[0].ping,42);assert.equal(roster.players[0].online,true);assert.equal(JSON.stringify(roster).includes(poll.playerClaims[0].token),false);
+ assert.equal((await call('/api/delivery/policy',{identityToken:poll.playerClaims[0].token+'tamper'})).status,400);
+ const policy=await(await call('/api/delivery/policy',{identityToken:poll.playerClaims[0].token})).json();
+ assert.equal(policy.vodStartupCdnSeconds,60);assert.equal(policy.vodEmergencyCdnSeconds,30);
+ assert.equal((await call('/api/settings',{delivery:{vodStartupCdnSeconds:45,vodEmergencyCdnSeconds:40}},admin)).status,200);
+ const adjusted=await(await call('/api/delivery/policy')).json();assert.equal(adjusted.vodStartupCdnSeconds,45);assert.equal(adjusted.vodEmergencyCdnSeconds,40);
+ assert.equal((await call('/api/settings',{delivery:{vodEmergencyCdnSeconds:5}},admin)).status,400);
+ assert.equal((await call('/api/settings',{delivery:{vodStartupCdnSeconds:10,vodEmergencyCdnSeconds:5}},admin)).status,400);
+ assert.equal((await(await call('/api/delivery/policy')).json()).vodStartupCdnSeconds,45,'invalid settings must not partly overwrite the live policy');
+ const spool=await(await call('/api/delivery/policy')).json();assert.equal(spool.vodPrefetchSeconds,600);assert.equal(spool.vodEoDeadlineSeconds,40);assert.equal(spool.vodBackupDeadlineSeconds,20);
+ assert.equal((await call('/api/settings',{delivery:{vodPrefetchSeconds:900,vodEoDeadlineSeconds:50,vodBackupDeadlineSeconds:25}},admin)).status,200);
+ assert.equal((await call('/api/settings',{delivery:{vodEoDeadlineSeconds:20,vodBackupDeadlineSeconds:40}},admin)).status,400);
+ assert.equal((await(await call('/api/delivery/policy')).json()).vodEoDeadlineSeconds,50,'invalid deadline pair must not partly apply');
+ const usage={token:policy.reportToken,r2Bytes:1000,cdnBytes:800,eoBytes:300,backupBytes:500};
+ assert.equal((await call('/api/delivery/report',usage)).status,200);assert.equal((await call('/api/delivery/report',usage)).status,200);
+ assert.equal((await call('/api/delivery/report',{...usage,cdnBytes:801})).status,400);
+ const traffic=await(await call('/api/traffic',undefined,admin)).json();const row=traffic.players.find(p=>p.uuid===uuid);
+ assert.equal(row.r2,1000);assert.equal(row.eo,300);assert.equal(row.backup,500);assert.ok(traffic.days.length);
+ assert.equal((await call('/api/traffic/export',undefined,admin)).headers.get('cache-control'),'no-store');
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'op'},admin)).status,400);
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'admin-grant'})).status,401);
+ const grant=await(await call('/api/players/'+uuid+'/action',{action:'admin-grant'},admin)).json();
+ const grants=await(await call('/api/bridge/poll',{players:[player],bans:[],screens:[],acks:[]},bridge)).json();const g=grants.commands.find(c=>c.id===grant.commandIds[0]);assert.equal(g.action,'player:admin-grant');assert.equal(g.connectionId,'connection-a');assert.ok(g.expiresAt>Date.now());
+ assert.equal((await call('/api/arena/build',{confirm:true})).status,401);assert.equal((await call('/api/arena/build',{confirm:false},admin)).status,400);
+ const queued=await(await call('/api/players/'+uuid+'/action',{action:'kick',reason:'test'},admin)).json();
+ const next=await(await call('/api/bridge/poll',{players:[player],bans:[],screens:[],acks:[]},bridge)).json();const command=next.commands.find(c=>c.id===queued.commandIds[0]);assert.equal(command.action,'player:kick');assert.equal(command.playerUuid,uuid);
+ assert.equal((await call('/api/bridge/poll',{players:[],bans:[],screens:[],acks:[{id:command.id}]},bridge)).status,200);
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'kick'},admin)).status,400);
+ const history=await(await call('/api/players',undefined,admin)).json();assert.equal(history.players[0].online,false);assert.equal(history.players[0].joins,1);
+});
+after(async()=>{
+  const exited=new Promise(r=>child.once("exit",r));child.kill();await exited;
+  assert.equal(stopped,0,"stopping remote website must not stop the OBS agent");
+  await new Promise(r=>agent.close(r));
+  assert.equal(dirname(dir),tmpdir());assert.ok(basename(dir).startsWith("cinema-remote-"));await rm(dir,{recursive:true,force:true});
+});
+async function call(path,body,headers={}){return fetch(base+path,{method:body===undefined?"GET":"POST",headers:{"Content-Type":"application/json",...headers},body:body===undefined?undefined:JSON.stringify(body)});}
+test("remote session protects control and previews, while bridge uses its own token",async()=>{
+  assert.equal((await call("/api/state")).status,401);
+  assert.equal((await call("/api/live/key")).status,401);
+  assert.equal((await call("/api/preview/missing/index.m3u8")).status,401);
+  assert.equal((await call("/api/screens/missing/update",{})).status,401);
+  assert.equal((await call("/api/screens/missing/remove",{})).status,401);
+  assert.equal((await call("/api/resources/missing/update",{})).status,401);
+  assert.equal((await call("/api/auth/login",{password:"wrong"})).status,401);
+  assert.equal((await call("/api/auth/login",{password:"test-password"},{Origin:"https://untrusted.example"})).status,403);
+  assert.equal((await call("/api/auth/login",{password:"test-password"},{Origin:"https://live.mc.acgzjd.cn","Sec-Fetch-Site":"same-origin"})).status,200);
+  const login=await call("/api/auth/login",{password:"test-password"},{Origin:base});assert.equal(login.status,200);
+  const set=login.headers.get("set-cookie");assert.match(set,/HttpOnly/i);assert.match(set,/SameSite=Strict/i);cookie=set.split(";")[0];
+  assert.equal((await call("/api/bridge/poll",{screens:[],acks:[]},{Authorization:"Bearer "+token})).status,200);
+  const response=await call("/api/state",undefined,{Cookie:cookie});assert.equal(response.status,200);
+  const state=await response.json();assert.equal(state.authEnabled,true);assert.equal(state.live.publishing,true);
+  assert.equal((await call("/api/live/key",undefined,{Cookie:cookie})).status,200);
+  const preview=await call(state.live.previewUrl,undefined,{Cookie:cookie});assert.equal(preview.status,200);assert.match(await preview.text(),/segment001.ts/);
+  const policy=await(await call("/api/delivery/policy")).json();assert.equal(policy.cdnEnabled,true);
+  assert.equal(policy.backupEnabled,true);assert.equal(policy.backupBase,"https://live.al.mc.acgzjd.cn");
+  assert.equal((await call("/api/settings",{delivery:{backupEnabled:false}},{Cookie:cookie})).status,200);
+  assert.equal((await(await call("/api/delivery/policy")).json()).backupEnabled,false);
+  assert.equal((await call("/api/settings",{delivery:{backupEnabled:true}},{Cookie:cookie})).status,200);
+  assert.equal((await call("/api/delivery/report",{token:"invalid",cdnBytes:100,r2Bytes:0})).status,400);
+  const previousUsage=(await(await call('/api/state',undefined,{Cookie:cookie})).json()).delivery.usage.dayBytes;
+  const usage={token:policy.reportToken,cdnBytes:2048,r2Bytes:4096};assert.equal((await call("/api/delivery/report",usage)).status,200);
+  assert.equal((await call("/api/delivery/report",usage)).status,200);
+  const counted=await(await call("/api/state",undefined,{Cookie:cookie})).json();assert.equal(counted.delivery.usage.dayBytes,previousUsage+2048);
+  assert.equal((await call("/api/settings",{delivery:{dayLimitGB:0.000001}},{Cookie:cookie})).status,200);
+  assert.equal((await(await call("/api/delivery/policy")).json()).cdnEnabled,false);
+  assert.equal((await(await call("/api/delivery/policy")).json()).backupEnabled,false);
+  assert.equal((await call("/api/delivery/report",{...usage,cdnBytes:1})).status,400);
+  assert.equal((await call("/api/settings",{delivery:{dayLimitGB:0,enabled:false}},{Cookie:cookie})).status,200);
+  assert.equal((await(await call("/api/delivery/policy")).json()).cdnEnabled,false);
+  assert.equal((await call("/api/preview/missing/index.m3u8",undefined,{Cookie:cookie})).status,404);
+  assert.equal((await call("/api/auth/logout",{},{Cookie:cookie})).status,200);
+  assert.equal((await call("/api/state",undefined,{Cookie:cookie})).status,401);
+});

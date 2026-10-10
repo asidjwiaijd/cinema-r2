@@ -1,0 +1,31 @@
+plugins {
+    id 'fabric-loom' version '1.8.13'
+    id 'maven-publish'
+}
+version = '0.3.0'
+group = 'dev.cinemar2'
+base { archivesName = 'cinema-r2' }
+repositories { mavenCentral() }
+dependencies {
+    minecraft 'com.mojang:minecraft:1.21.1'
+    mappings 'net.fabricmc:yarn:1.21.1+build.3:v2'
+    modImplementation 'net.fabricmc:fabric-loader:0.16.10'
+    modImplementation 'net.fabricmc.fabric-api:fabric-api:0.116.12+1.21.1'
+    implementation 'net.java.dev.jna:jna:5.15.0'
+    include 'net.java.dev.jna:jna:5.15.0'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+}
+loom {
+    mixin { useLegacyMixinAp = true; defaultRefmapName = 'cinemar2.refmap.json' }
+    splitEnvironmentSourceSets()
+    mods { cinemar2 { sourceSet sourceSets.main; sourceSet sourceSets.client } }
+}
+processResources { inputs.property 'version', project.version; filesMatching('fabric.mod.json') { expand version: project.version } }
+tasks.withType(JavaCompile).configureEach { options.release = 21; options.encoding = 'UTF-8' }
+java { withSourcesJar(); sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
+test { useJUnitPlatform(); systemProperty 'cinema.mpv', System.getenv('CINEMA_MPV_LIBRARY') ?: 'libmpv-2'; systemProperty 'cinema.integration', project.findProperty('integrationTest') ?: 'false'; inputs.property 'consoleIntegration', System.getenv('CINEMA_CONSOLE_TEST') ?: 'false' }
+sourceSets.test.compileClasspath += sourceSets.client.output
+sourceSets.test.runtimeClasspath += sourceSets.client.output
+sourceSets.test.compileClasspath += sourceSets.client.compileClasspath
+sourceSets.test.runtimeClasspath += sourceSets.client.runtimeClasspath
+tasks.named('compileTestJava') { dependsOn tasks.named('compileClientJava') }

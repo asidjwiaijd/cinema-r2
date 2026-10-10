@@ -1,0 +1,8 @@
+Cinema R2 is an independent implementation inspired by the in-world screen
+and shared timeline concepts in DreamDisplays:
+https://github.com/arnodoelinger/dreamdisplays
+
+The Gradle wrapper scripts and binary are distributed under the Apache
+License 2.0 by the Gradle project: https://www.apache.org/licenses/LICENSE-2.0
+Minecraft, Fabric, FFmpeg, and development dependencies retain their own
+licenses. FFmpeg is an external user-installed executable and is not bundled.

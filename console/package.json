@@ -1,0 +1,25 @@
+{
+  "name": "cinema-console",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1 --port 3211",
+    "start": "node server/index.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "express": "^5.3.0",
+    "hls.js": "^1.6.0",
+    "lucide-react": "^0.577.0",
+    "multer": "^2.0.2",
+    "node-media-server": "2.7.4",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "vite": "8.3.4"
+  }
+}

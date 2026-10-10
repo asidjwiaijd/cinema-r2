@@ -1,0 +1,1 @@
+{"variants":{"facing=north":{"model":"cinemar2:block/screen"},"facing=east":{"model":"cinemar2:block/screen","y":90},"facing=south":{"model":"cinemar2:block/screen","y":180},"facing=west":{"model":"cinemar2:block/screen","y":270}}}

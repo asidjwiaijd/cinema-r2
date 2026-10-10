@@ -1,0 +1,10 @@
+# 替换为已指向直播源站的真实域名；本文件不会自动部署。
+live.example.com {
+    @hls path /live/*
+    handle @hls {
+        reverse_proxy 127.0.0.1:3210
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

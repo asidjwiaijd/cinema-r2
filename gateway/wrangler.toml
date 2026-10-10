@@ -1,0 +1,11 @@
+name = "cinema-media"
+main = "src/worker.mjs"
+compatibility_date = "2025-10-01"
+workers_dev = true
+
+[vars]
+ENABLED = "false"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "cinema-media"
