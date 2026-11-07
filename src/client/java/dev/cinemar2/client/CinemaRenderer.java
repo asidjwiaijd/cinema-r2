@@ -11,6 +11,7 @@ import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.feature.ModelFeatureRenderer;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderSetup;
+import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.RenderPipelines;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
@@ -22,10 +23,13 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
 import net.fabricmc.fabric.api.client.rendering.v1.RenderStateDataKey;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.ArrayList;
 
 public final class CinemaRenderer implements BlockEntityRenderer<CinemaEntity,CinemaRenderer.State> {
+    private static final Logger LOGGER=LoggerFactory.getLogger("cinemar2");
     private static final Identifier BLACK=Identifier.fromNamespaceAndPath("cinemar2","textures/block/black.png");
     private static final RenderPipeline SCREEN=RenderPipelines.register(RenderPipeline.builder(RenderPipelines.MATRICES_PROJECTION_SNIPPET)
         .withLocation(Identifier.fromNamespaceAndPath("cinemar2","pipeline/screen"))
@@ -33,7 +37,9 @@ public final class CinemaRenderer implements BlockEntityRenderer<CinemaEntity,Ci
         // Occlude clouds behind the display while respecting blocks in front.
         .withDepthStencilState(DepthStencilState.DEFAULT)
         .withSampler("Sampler0").withVertexFormat(DefaultVertexFormat.ENTITY,VertexFormat.Mode.QUADS).withCull(false).build());
-    private static final java.util.Map<Identifier,RenderType> types=new java.util.LinkedHashMap<>();
+    private record TypeKey(Identifier texture,boolean shaders) {}
+    private static final java.util.Map<TypeKey,RenderType> types=new java.util.LinkedHashMap<>();
+    private static Boolean lastShaders;
     private record RemoteScreen(net.minecraft.core.BlockPos pos,float width,float yaw,MediaPlayer player) {}
     private static final RenderStateDataKey<List<RemoteScreen>> REMOTE=RenderStateDataKey.create();
     private static long remoteDrawCalls;
@@ -91,31 +97,47 @@ public final class CinemaRenderer implements BlockEntityRenderer<CinemaEntity,Ci
         // unassigned core shader into Iris's separate shadow framebuffer.
         if(IrisCompatibility.shadowPass())return false;
         Identifier texture=player==null?null:player.uploadFrame();
+        drawQuad(width,yaw,texture==null?BLACK:texture,matrices,nodes);
+        return texture!=null;
+    }
+    /** Draw the same quad from a caller supplied texture; used by the debug test screen. */
+    static void drawDebug(float width,float yaw,Identifier texture,PoseStack matrices,SubmitNodeCollector nodes){
+        if(IrisCompatibility.shadowPass())return;
+        drawQuad(width,yaw,texture,matrices,nodes);
+    }
+    private static void drawQuad(float width,float yaw,Identifier texture,PoseStack matrices,SubmitNodeCollector nodes){
         matrices.pushPose();matrices.translate(0.5,1,0.5);
         matrices.mulPose(Axis.YP.rotationDegrees(-yaw));matrices.translate(0,0,0.51);
         float left=-width/2,right=width/2,top=width*9/16;
         // VideoPixels supplies opaque alpha for both vanilla and shaderpack programs.
-        nodes.submitCustomGeometry(matrices,screenType(texture==null?BLACK:texture),(pose,vertices)->{
+        nodes.submitCustomGeometry(matrices,screenType(texture),(pose,vertices)->{
             vertex(vertices,pose,left,0,0,1);vertex(vertices,pose,right,0,1,1);
             vertex(vertices,pose,right,top,1,0);vertex(vertices,pose,left,top,0,0);
         });
         matrices.popPose();
-        return texture!=null;
     }
     private static boolean sameTimeline(dev.cinemar2.Packets.State state){
         var activeView=CinemaClient.views.get(CinemaClient.active);
         return activeView!=null&&Math.abs(CinemaClient.target(state)-CinemaClient.target(activeView.state()))<2000;
     }
     private static RenderType screenType(Identifier texture){
-        // Iris's entity path supplies its shaderpack program, extended vertex
-        // format and overlay/lightmap bindings. VideoPixels keeps every texel
-        // opaque; avoid eye programs which some packs blend additively.
-        if(IrisCompatibility.shadersActive())return net.minecraft.client.renderer.rendertype.RenderTypes.entityTranslucent(texture);
-        var type=types.get(texture);
+        // Iris only overrides vanilla pipelines; the custom unlit pipeline is not
+        // picked up while a shader pack is active. The entity cutout path is a
+        // vanilla pipeline Iris can take over: no blending (the video is opaque),
+        // no culling (the display stays visible from both sides), and the
+        // lightmap/overlay bindings the vertex data already supplies.
+        boolean shaders=IrisCompatibility.shadersActive();
+        if(lastShaders==null||lastShaders!=shaders){
+            lastShaders=shaders;
+            LOGGER.info("Screen render mode: {}",shaders?"iris-entity-cutout":"unlit-custom");
+        }
+        var key=new TypeKey(texture,shaders);
+        var type=types.get(key);
         if(type==null){
-            type=RenderType.create("cinema_screen",RenderSetup.builder(SCREEN).withTexture("Sampler0",texture).createRenderSetup());
-            types.put(texture,type);
-            if(types.size()>8)types.remove(types.keySet().iterator().next());
+            type=shaders?RenderTypes.entityCutout(texture)
+                :RenderType.create("cinema_screen",RenderSetup.builder(SCREEN).withTexture("Sampler0",texture).createRenderSetup());
+            types.put(key,type);
+            if(types.size()>16)types.remove(types.keySet().iterator().next());
         }
         return type;
     }
