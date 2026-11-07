@@ -9,6 +9,7 @@
   ],
   "license": "MIT",
   "environment": "*",
+  "accessWidener": "cinemar2.accesswidener",
   "entrypoints": {
     "main": [
       "dev.cinemar2.CinemaMod"

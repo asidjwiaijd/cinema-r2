@@ -1,0 +1,10 @@
+accessWidener	v2	official
+
+# RenderType(String, RenderSetup) is private in 26.1.2. The mod subclasses
+# RenderType so it can report hasBlending() == false to Iris shader packs.
+accessible	method	net/minecraft/client/renderer/rendertype/RenderType	<init>	(Ljava/lang/String;Lnet/minecraft/client/renderer/rendertype/RenderSetup;)V
+
+# RenderType.create(String, RenderSetup) is package-private. Fabric API 0.155.3
+# already opens it through fabric-transitive-access-wideners-v1, but declaring it
+# here keeps the unlit screen path working with older / future Fabric API builds.
+accessible	method	net/minecraft/client/renderer/rendertype/RenderType	create	(Ljava/lang/String;Lnet/minecraft/client/renderer/rendertype/RenderSetup;)Lnet/minecraft/client/renderer/rendertype/RenderType;
