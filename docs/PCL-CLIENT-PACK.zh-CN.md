@@ -1,6 +1,6 @@
-# PCL 客户端整合包 · 0.4.3 · Minecraft 26.1.2 · Windows x64
+# PCL 客户端整合包 · 0.4.7 · Minecraft 26.1.2 · Windows x64
 
-产物：`dist/Cinema-R2-0.4.3-MC26.1.2-PCL-Windows-x64-Java25-Slim.zip`，包版本 `0.4.3-pcl.2`，包含 Java 25 和已验证的精简 libmpv。支持 100 格宽屏幕、默认 256 格观看和远处声音；距离修复需要服务端也更新至 0.4.3。
+构建产物：`dist/Cinema-R2-0.4.7-MC26.1.2-PCL-Windows-x64-Java25-Slim.zip`，包版本 `0.4.7-pcl.2`，包含 Java 25 和已验证的精简 libmpv。支持 100 格宽屏幕、默认 256 格观看和远处声音；距离修复需要服务端也更新至 0.4.3。0.4.7 包含 Iris 光影兼容修复；已有实例可直接替换客户端 JAR，无需重新导入整合包。
 
 DLL 约 25.7 MiB，原完整版约 115.3 MiB。保留常见格式与硬件解码，移除编码器、脚本、光盘与多余输出。原生源码与构建方式见 [精简构建](../tools/native/README.zh-CN.md)，再次分发时同时提供 `cinema-libmpv-minimal-20261022-sources.zip`。
 
@@ -11,7 +11,7 @@ DLL 约 25.7 MiB，原完整版约 115.3 MiB。保留常见格式与硬件解码
 3. 多人游戏连接服主提供的游戏地址；整合包不预置游戏服务器地址。
 4. 其他启动器选择实例 `jre25/bin/java.exe`。libmpv 已在 `cinema-native/windows-x86_64/libmpv-2.dll`，无需另装播放器或 FFmpeg。
 
-包含 Cinema 0.4.3、Fabric API 0.155.3+26.1.2、内嵌 JNA、自行构建的 Windows x64 精简 libmpv、Temurin 25.0.4.1+1 运行环境和第三方许可。Java 保留完整模块与 legal、NOTICE；未使用 jlink 裁剪。Minecraft 和 Fabric Loader 由启动器下载。
+包含 Cinema 0.4.7、Fabric API 0.155.3+26.1.2、内嵌 JNA、自行构建的 Windows x64 精简 libmpv、Temurin 25.0.4.1+1 运行环境和第三方许可。Java 保留完整模块与 legal、NOTICE；未使用 jlink 裁剪。Minecraft 和 Fabric Loader 由启动器下载。Iris 和 Sodium 不属于必装依赖，也不由构建器自动添加。
 
 配置中的 DLL 和缓存使用相对路径，运行时将 DLL 转为规范绝对路径后交给 Windows/JNA 加载。程序使用 Minecraft 新版图形接口批量上传视频帧，仍保留 libmpv 大缓存与 6 路 R2 预取。
 
@@ -21,7 +21,7 @@ DLL 约 25.7 MiB，原完整版约 115.3 MiB。保留常见格式与硬件解码
 
 ```powershell
 python tools/build_pcl_pack.py `
-  --mod-jar build/libs/cinema-r2-0.4.3.jar `
+  --mod-jar build/libs/cinema-r2-0.4.7.jar `
   --fabric-api "你的路径/fabric-api-0.155.3+26.1.2.jar" `
   --mpv-library "你的路径/libmpv-2.dll" `
   --native-manifest "你的路径/native-build.json" `

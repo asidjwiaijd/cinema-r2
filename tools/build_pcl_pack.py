@@ -15,7 +15,7 @@ import zipfile
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.4.6"
+VERSION = "0.4.7"
 PACK_VERSION = VERSION + "-pcl.1"
 MPV_SHA256 = "a3708b0be3d3b5d8f1fb4c2e2a43346356471a78060e598dab774d00e8cc05f3"
 MPV_ARCHIVE_SHA256 = "8a15fc07996a33235778256157151c42cbaceee976f0a98860f55047856935b2"

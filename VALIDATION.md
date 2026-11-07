@@ -254,3 +254,12 @@ Node 13 项通过，React 生产构建通过。MediaRelayTest 17 项和 VodSegme
 - 中途一次 R2 任务失败后复用已上传的 258 个完整对象，最终 497 个对象全部就绪。R2 总对象数 1113、总量 3,944,879,879 字节，低于 8,000,000,000 字节应用预算；抽样对象及清单 SHA-256 与源站一致。
 - R2、EO、阿里云清单均返回 200；精简 libmpv 经公网播放第 30 分钟位置，D3D11VA copy 解码、WASAPI 音频及进度均正常。Cloudflare 对 Python 默认 UA 返回 1010，但影院客户端 UA、libmpv UA 与浏览器 UA 正常，未改动云端安全规则。没有自动替换游戏当前节目。
 - 实际文件的私有操作记录在 E:/mc/media-work/chainsaw-reze-20261107/validation.json；不随源码或客户端整合包分发。未承诺所有浏览器均可预览 HEVC，也未重复多人负载测试。
+
+## 客户端 0.4.7 · Iris 光影兼容 · 2026-11-07
+
+- 对应 Issue #1：Minecraft 26.1.2、Fabric Loader 0.19.5、Sodium 0.9.2、Iris 1.11.4，独立实例使用 Complementary Unbound r5.6.1。旧 0.4.6 在解码器已出帧、纹理提交成功时仍不显示屏幕，并记录自定义管线未被 Iris 接管。
+- 启用光影时使用原版实体 translucent 渲染路径，让 Iris 提供受支持的光影程序、扩展顶点、overlay/lightmap 绑定与正确绘制阶段。视频 alpha 在解码线程固定为 255，保留 RGB；没有使用部分光影包中会加法混合、透出云层的眼睛/发光路径。Iris 通过公开 API 可选查询，不增加必装依赖。
+- 独立 MC 25566、后台 3210 与 CinemaTest 客户端完成 8 个截图检查：开启光影的彩条、前景方块遮挡、播放中关闭/重新开启光影、暂停时关闭/重新开启光影，以及未安装 Iris 的彩条和遮挡。96 格处控制器区块未加载，视频仍正常显示；光影开关前后保持同一解码器和 WASAPI 音频。黑色区域不透出天空，原版云层和前景遮挡回归正常。
+- 常规构建 62 项测试中 43 通过、19 个外部环境测试跳过，无失败。另行启用真实精简 libmpv 的 NativeRuntimeTest 与像素测试，共 5 项通过、无跳过；覆盖常用视频/音频、HLS、硬件解码、音量及实际视频帧的 alpha 检查。
+- 证据：dist/iris-0.4.7-validation.json、dist/iris-0.4.7-before.png、dist/iris-0.4.7-after-white.png、dist/iris-0.4.7-after-bars.png、dist/iris-0.4.7-foreground.png。模组及 sources JAR 已构建；安装器和 PCL 构建器版本同步为 0.4.7。测试服务均已停止，未替换生产玩家实例或重启生产后台。
+- 仅客户端需要更新。光影包仍能改变色调、曝光、雾和远距离可见性；未验证所有光影包、未做新的多人负载测试，未修改已知 CDN 补片超时策略。

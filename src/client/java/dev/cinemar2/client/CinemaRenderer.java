@@ -87,11 +87,14 @@ public final class CinemaRenderer implements BlockEntityRenderer<CinemaEntity,Ci
         if(!state.remote)draw(state.width,state.yaw,state.player,matrices,nodes);
     }
     private static boolean draw(float width,float yaw,MediaPlayer player,PoseStack matrices,SubmitNodeCollector nodes){
+        // A display is visible geometry, not a shadow caster. Do not submit an
+        // unassigned core shader into Iris's separate shadow framebuffer.
+        if(IrisCompatibility.shadowPass())return false;
         Identifier texture=player==null?null:player.uploadFrame();
         matrices.pushPose();matrices.translate(0.5,1,0.5);
         matrices.mulPose(Axis.YP.rotationDegrees(-yaw));matrices.translate(0,0,0.51);
         float left=-width/2,right=width/2,top=width*9/16;
-        // The screen is opaque: rgb0's undefined padding byte must not affect blending.
+        // VideoPixels supplies opaque alpha for both vanilla and shaderpack programs.
         nodes.submitCustomGeometry(matrices,screenType(texture==null?BLACK:texture),(pose,vertices)->{
             vertex(vertices,pose,left,0,0,1);vertex(vertices,pose,right,0,1,1);
             vertex(vertices,pose,right,top,1,0);vertex(vertices,pose,left,top,0,0);
@@ -104,6 +107,10 @@ public final class CinemaRenderer implements BlockEntityRenderer<CinemaEntity,Ci
         return activeView!=null&&Math.abs(CinemaClient.target(state)-CinemaClient.target(activeView.state()))<2000;
     }
     private static RenderType screenType(Identifier texture){
+        // Iris's entity path supplies its shaderpack program, extended vertex
+        // format and overlay/lightmap bindings. VideoPixels keeps every texel
+        // opaque; avoid eye programs which some packs blend additively.
+        if(IrisCompatibility.shadersActive())return net.minecraft.client.renderer.rendertype.RenderTypes.entityTranslucent(texture);
         var type=types.get(texture);
         if(type==null){
             type=RenderType.create("cinema_screen",RenderSetup.builder(SCREEN).withTexture("Sampler0",texture).createRenderSetup());

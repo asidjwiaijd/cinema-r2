@@ -2,7 +2,7 @@ plugins {
     id 'net.fabricmc.fabric-loom' version '1.15.5'
     id 'maven-publish'
 }
-version = '0.4.6'
+version = '0.4.7'
 group = 'dev.cinemar2'
 base { archivesName = 'cinema-r2' }
 repositories { mavenCentral() }

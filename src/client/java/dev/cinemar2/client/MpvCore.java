@@ -136,7 +136,7 @@ public final class MpvCore implements AutoCloseable {
                         }
                         if(lastVolume!=volume){property("volume",Float.toString(volume*100));lastVolume=volume;}
                         if(update.getAndSet(false)&&(api.mpv_render_context_update(render)&1)!=0){
-                            synchronized(pixelsLock){check(api.mpv_render_context_render(render,draw));dirty=true;frames=true;rendered++;}
+                            synchronized(pixelsLock){check(api.mpv_render_context_render(render,draw));VideoPixels.makeOpaque(pixels.getByteBuffer(0,(long)width*height*4));dirty=true;frames=true;rendered++;}
                         }
                         long now=System.currentTimeMillis();if(now>=nextStats){
                             long position=(long)(number("time-pos",origin/1000.0)*1000);

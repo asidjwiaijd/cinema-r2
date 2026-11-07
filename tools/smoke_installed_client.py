@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import time
 import zipfile
-from install_local_client import GAME_ROOT, NAME, INSTANCE, JAVA_HOME, windows_allowed
+from install_local_client import GAME_ROOT, NAME, INSTANCE, JAVA_HOME, VERSION, windows_allowed
 
 def main():
     metadata = json.loads((INSTANCE / (NAME + ".json")).read_text(encoding="utf8"))
@@ -48,7 +48,7 @@ def main():
         if "${" in arg:
             raise RuntimeError("Unresolved launcher argument")
         arguments.append(arg)
-    command = [str(JAVA_HOME / "bin/java.exe"), "-Xmx2G", "--enable-native-access=ALL-UNNAMED", "-Djava.library.path=" + str(natives), "-Dminecraft.launcher.brand=cinema-r2-smoke", "-Dminecraft.launcher.version=0.4.3", "-cp", ";".join(map(str, classpath)), metadata["mainClass"], *arguments]
+    command = [str(JAVA_HOME / "bin/java.exe"), "-Xmx2G", "--enable-native-access=ALL-UNNAMED", "-Djava.library.path=" + str(natives), "-Dminecraft.launcher.brand=cinema-r2-smoke", "-Dminecraft.launcher.version=" + VERSION, "-cp", ";".join(map(str, classpath)), metadata["mainClass"], *arguments]
     log = INSTANCE / "cinema-startup-test.log"
     with log.open("w", encoding="utf8") as output:
         process = subprocess.Popen(command, cwd=INSTANCE, stdout=output, stderr=subprocess.STDOUT)
@@ -56,7 +56,7 @@ def main():
             deadline = time.time() + 90
             while time.time() < deadline and process.poll() is None:
                 text = log.read_text(encoding="utf8", errors="replace")
-                if "cinemar2 0.4.3" in text and "minecraft:textures/atlas/gui.png-atlas" in text:
+                if "cinemar2 " + VERSION in text and "minecraft:textures/atlas/gui.png-atlas" in text:
                     print("Production instance loaded Cinema R2 and completed graphics/assets/audio initialization", flush=True)
                     return
                 time.sleep(1)

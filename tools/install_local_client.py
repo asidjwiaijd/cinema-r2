@@ -10,6 +10,7 @@ import urllib.request
 
 GAME_ROOT = Path(r"E:\PCL 正式版 2.13.0.1\.minecraft")
 PROJECT = Path(__file__).resolve().parents[1]
+VERSION = "0.4.7"
 NAME = "Cinema-R2-26.1.2-Fabric"
 INSTANCE = GAME_ROOT / "versions" / NAME
 JAVA_SOURCE = PROJECT / ".tools" / "pcl-java25-runtime"
@@ -109,7 +110,7 @@ def main():
     shutil.copytree(JAVA_SOURCE, JAVA_HOME, dirs_exist_ok=True)
     mods = INSTANCE / "mods"
     mods.mkdir(exist_ok=True)
-    shutil.copy2(PROJECT / "build/libs/cinema-r2-0.4.3.jar", mods)
+    shutil.copy2(PROJECT / f"build/libs/cinema-r2-{VERSION}.jar", mods)
     api_url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/0.155.3+26.1.2/fabric-api-0.155.3+26.1.2.jar"
     with urllib.request.urlopen(api_url + ".sha1", timeout=60) as response:
         api_sha = response.read().decode().strip()

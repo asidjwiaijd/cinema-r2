@@ -49,7 +49,10 @@ class NativeRuntimeTest {
     @Test void commonVideoFormatsStillImageAndFragmentedMp4Decode()throws Exception{
         for(String name:List.of("h264-aac.mp4","hevc10-aac.mkv","vp9-opus.webm","av1-aac.mp4","fmp4.m3u8","still.png")){
             try(var p=new MpvCore(settings(),url(name),0,true,0,false,12,!name.endsWith("png"),720,600,1)){
-                awaitReady(p,!name.endsWith("png"));boolean[] copied={false};p.copyFrame(pixels->{copied[0]=pixels.remaining()==p.width*p.height*4;});assertTrue(copied[0]);
+                awaitReady(p,!name.endsWith("png"));boolean[] copied={false};p.copyFrame(pixels->{
+                    copied[0]=pixels.remaining()==p.width*p.height*4;
+                    for(int i=3;i<pixels.limit();i+=4096)assertEquals(255,Byte.toUnsignedInt(pixels.get(i)),"Decoded video alpha must be opaque");
+                });assertTrue(copied[0]);
                 System.out.println("Native format OK: "+name+"; hwdec="+p.stats().hardwareDecoder()+"; audio="+p.stats().audioDevice());
             }
         }

@@ -1,6 +1,6 @@
 # Cinema R2
 
-独立的 Minecraft 多人影院模组及 React 管理台，当前 MC 模组版本 **0.4.6**、管理台版本 **0.4.7**，适用于 Minecraft **26.1.2 / Fabric / Java 25**。
+独立的 Minecraft 多人影院模组及 React 管理台，当前 MC 模组和管理台版本均为 **0.4.7**，适用于 Minecraft **26.1.2 / Fabric / Java 25**。
 
 网页管理节目、资源、屏幕、播放器策略、影院管理员和下载用量；游戏内屏幕负责播放。客户端使用 libmpv，支持 720p/1080p 视频、带静态画面的音频、图片轮播和 OBS RTMP 转 HLS 直播。
 
@@ -15,14 +15,17 @@
 - [验证记录及实际限制](VALIDATION.md)
 - [第三方运行库与许可证](THIRD_PARTY.md)
 - [PCL 客户端整合包导入与打包](docs/PCL-CLIENT-PACK.zh-CN.md)
+- [0.4.7 Iris 光影兼容与客户端更新](docs/IRIS-0.4.7.zh-CN.md)
 
 最新更新包括屏幕深度遮挡修复、「主音量 × 方块」音量控制、分片主动读取与停滞恢复，以及可选 HEVC 原码流分片、R2 并行上传和断点校验。精简 libmpv 的构建脚本与补丁见 [原生库构建说明](tools/native/README.zh-CN.md)。600 秒是预取目标窗口，不代表已经下载好的连续缓冲时长；当前 CDN 补片仍存在整片超时较短、救援并发有限的风险，尚未在本次版本中修复。
+
+客户端 0.4.7 修复 [Issue #1](https://github.com/asidjwiaijd/cinema-r2/issues/1)：Iris 光影开启时改用受支持的原版实体渲染路径，并将 libmpv 的 RGB 填充字节转为不透明 alpha，避免画面消失或透出背景。Iris 可选安装，关闭光影或未安装 Iris 时仍用原有无光照屏幕管线。光影包的色调、曝光和雾效果仍可能影响画面；无需升级网站、MC 服务端或原生库即可使用此客户端修复。
 
 ## MC 服务端接入现有网站后台
 
 如果希望自己的 MC 服务端由项目维护者现有的网站控制，先联系维护者申请接入，取得**私下提供的桥接令牌**并确认切换安排。当前后台只接受一个活动中的 MC 服务端；已有服务端在线时，另一个实例会收到 `409 控制台已连接另一个 MC 服务端`。设置不同的 `serverId` 不能实现多服务器隔离。
 
-1. 安装 Minecraft 26.1.2 Fabric 服务端、匹配的 Fabric API 和 `cinema-r2-0.4.6.jar`。MC 服务端不需要 libmpv、R2 密钥或网站登录密码。
+1. 安装 Minecraft 26.1.2 Fabric 服务端、匹配的 Fabric API 和 `cinema-r2-0.4.7.jar`。MC 服务端不需要 libmpv、R2 密钥或网站登录密码。
 2. 启动一次生成配置，正常停止服务端，然后编辑其工作目录下的 `config/cinemar2-server.json`：
 
 ```json
