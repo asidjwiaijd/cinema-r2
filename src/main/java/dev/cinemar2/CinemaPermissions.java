@@ -2,7 +2,7 @@ package dev.cinemar2;
 
 import com.google.gson.*;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
 import java.nio.file.*;
 import java.util.*;
 
@@ -17,6 +17,6 @@ public final class CinemaPermissions {
     public static void revoke(UUID uuid){registered.remove(uuid);active.remove(uuid);save();}
     public static void disconnect(UUID uuid){active.remove(uuid);}
     public static boolean registered(UUID uuid){return registered.contains(uuid);}
-    public static boolean canBuild(ServerPlayerEntity player){return registered.contains(player.getUuid())&&Objects.equals(active.get(player.getUuid()),ManagementBridge.connection(player.getUuid()))&&active.containsKey(player.getUuid());}
+    public static boolean canBuild(ServerPlayer player){return player.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_GAMEMASTER)||registered.contains(player.getUUID())&&Objects.equals(active.get(player.getUUID()),ManagementBridge.connection(player.getUUID()))&&active.containsKey(player.getUUID());}
     public static List<String> roles(){return registered.stream().map(UUID::toString).sorted().toList();}
 }

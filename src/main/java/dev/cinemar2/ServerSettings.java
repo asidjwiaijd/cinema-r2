@@ -8,7 +8,7 @@ import java.util.List;
 
 public final class ServerSettings {
     public List<String> allowedMediaHosts = List.of("media.example.com");
-    public int viewDistance = 64;
+    public int viewDistance = CinemaCoverage.DEFAULT_DISTANCE;
     public String managementUrl = "";
     public String managementFallbackUrl = "";
     public String managementToken = "";
@@ -22,7 +22,8 @@ public final class ServerSettings {
             if (!Files.exists(file)) Files.writeString(file, gson.toJson(new ServerSettings()));
             var config = gson.fromJson(Files.readString(file), ServerSettings.class);
             if (config == null || config.allowedMediaHosts == null) throw new IllegalArgumentException("Missing hosts");
-            config.viewDistance = Math.max(16, Math.min(96, config.viewDistance));
+            // Existing 16–96 block settings must not retain the old black-screen boundary.
+            config.viewDistance = CinemaCoverage.distance(config.viewDistance);
             if(!config.managementFallbackUrl.isBlank()){
                 var fallback=URI.create(config.managementFallbackUrl);
                 if(!"https".equals(fallback.getScheme())||fallback.getHost()==null||fallback.getUserInfo()!=null||fallback.getQuery()!=null||fallback.getFragment()!=null||!(fallback.getPath().isEmpty()||fallback.getPath().equals("/")))throw new IllegalArgumentException("管理备用地址必须为 HTTPS 域名根地址");

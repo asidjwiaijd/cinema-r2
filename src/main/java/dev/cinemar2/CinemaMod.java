@@ -5,53 +5,56 @@ import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.fabric.api.object.builder.v1.block.entity.FabricBlockEntityTypeBuilder;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-import net.minecraft.block.AbstractBlock;
-import net.minecraft.block.Block;
-import net.minecraft.block.entity.BlockEntityType;
-import net.minecraft.item.BlockItem;
-import net.minecraft.item.Item;
-import net.minecraft.registry.Registries;
-import net.minecraft.registry.Registry;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Identifier;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
 public final class CinemaMod implements ModInitializer {
-    public static final CinemaBlock SCREEN = new CinemaBlock(AbstractBlock.Settings.create().strength(2).nonOpaque());
+    public static final CinemaBlock SCREEN = new CinemaBlock(BlockBehaviour.Properties.of().setId(ResourceKey.create(Registries.BLOCK,id("screen"))).strength(2).noOcclusion());
     public static BlockEntityType<CinemaEntity> ENTITY;
     public static ServerSettings settings;
     private static final Map<UUID, Long> lastAction = new HashMap<>();
     private static final Map<UUID, Long> lastClock = new HashMap<>();
-    public static Identifier id(String path) { return Identifier.of("cinemar2", path); }
+    public static Identifier id(String path) { return Identifier.fromNamespaceAndPath("cinemar2", path); }
     public void onInitialize() {
-        Registry.register(Registries.BLOCK, id("screen"), SCREEN);
-        Registry.register(Registries.ITEM, id("screen"), new BlockItem(SCREEN, new Item.Settings()));
-        ENTITY = Registry.register(Registries.BLOCK_ENTITY_TYPE, id("screen"), FabricBlockEntityTypeBuilder.create(CinemaEntity::new, SCREEN).build());
-        PayloadTypeRegistry.playC2S().register(Packets.Control.ID, Packets.Control.CODEC);
-        PayloadTypeRegistry.playC2S().register(Packets.Playback.ID, Packets.Playback.CODEC);
-        PayloadTypeRegistry.playS2C().register(Packets.State.ID, Packets.State.CODEC);
-        PayloadTypeRegistry.playS2C().register(Packets.Identity.ID, Packets.Identity.CODEC);
-        PayloadTypeRegistry.playS2C().register(Packets.Clock.ID, Packets.Clock.CODEC);
+        Registry.register(BuiltInRegistries.BLOCK, id("screen"), SCREEN);
+        Registry.register(BuiltInRegistries.ITEM, id("screen"), new BlockItem(SCREEN, new Item.Properties().setId(ResourceKey.create(Registries.ITEM,id("screen")))));
+        ENTITY = Registry.register(BuiltInRegistries.BLOCK_ENTITY_TYPE, id("screen"), FabricBlockEntityTypeBuilder.create(CinemaEntity::new, SCREEN).build());
+        PayloadTypeRegistry.serverboundPlay().register(Packets.Control.ID, Packets.Control.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(Packets.Playback.ID, Packets.Playback.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(Packets.State.ID, Packets.State.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(Packets.Audio.ID, Packets.Audio.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(Packets.Geometry.ID, Packets.Geometry.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(Packets.Identity.ID, Packets.Identity.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(Packets.Clock.ID, Packets.Clock.CODEC);
         CinemaProtection.initialize();
         ServerLifecycleEvents.SERVER_STARTING.register(server -> { settings = ServerSettings.load(); CinemaPermissions.load();lastAction.clear(); lastClock.clear(); ManagementBridge.start(server); });
         ServerLifecycleEvents.SERVER_STARTED.register(CinemaProtection::configure);
         ServerLifecycleEvents.SERVER_STOPPING.register(ManagementBridge::stop);
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> { lastAction.remove(handler.player.getUuid()); lastClock.remove(handler.player.getUuid()); });
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> { lastAction.remove(handler.player.getUUID()); lastClock.remove(handler.player.getUUID()); });
         ServerPlayNetworking.registerGlobalReceiver(Packets.Playback.ID,(packet,ctx)->ctx.server().execute(()->{
             var player=ctx.player();long now=System.currentTimeMillis();
-            if(!(player.getServerWorld().getBlockEntity(packet.pos()) instanceof CinemaEntity screen)||player.squaredDistanceTo(packet.pos().toCenterPos())>64*64||packet.revision()!=screen.revision||packet.positionMs()<0||packet.positionMs()>86400000||packet.cacheMs()<0)return;
-            var old=screen.playback.get(player.getUuid());if(old!=null&&now-old.receivedMs()<800)return;
-            screen.playback.put(player.getUuid(),new CinemaEntity.PlaybackSample(packet,now,player.getName().getString()));
+            if(!(player.level().getBlockEntity(packet.pos()) instanceof CinemaEntity screen)||player.distanceToSqr(packet.pos().getCenter())>(double)settings.viewDistance*settings.viewDistance||packet.revision()!=screen.revision||packet.positionMs()<0||packet.positionMs()>86400000||packet.cacheMs()<0)return;
+            var old=screen.playback.get(player.getUUID());if(old!=null&&now-old.receivedMs()<800)return;
+            screen.playback.put(player.getUUID(),new CinemaEntity.PlaybackSample(packet,now,player.getName().getString()));
         }));
         ServerPlayNetworking.registerGlobalReceiver(Packets.Control.ID, (packet, ctx) -> ctx.server().execute(() -> {
             var player = ctx.player(); var now = System.currentTimeMillis();
             if (packet.action().equals("clock")) {
-                if (now - lastClock.getOrDefault(player.getUuid(), 0L) >= 1000) {
-                    lastClock.put(player.getUuid(), now);
+                if (now - lastClock.getOrDefault(player.getUUID(), 0L) >= 1000) {
+                    lastClock.put(player.getUUID(), now);
                     ServerPlayNetworking.send(player, new Packets.Clock(packet.value(), now));
                 }
                 return;
@@ -60,8 +63,8 @@ public final class CinemaMod implements ModInitializer {
 
         }));
         AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
-            if (!world.isClient && world.getBlockEntity(pos) instanceof CinemaEntity screen && !screen.canControl(player)) return ActionResult.FAIL;
-            return ActionResult.PASS;
+            if (!world.isClientSide() && world.getBlockEntity(pos) instanceof CinemaEntity screen && !screen.canControl(player)) return InteractionResult.FAIL;
+            return InteractionResult.PASS;
         });
     }
 }

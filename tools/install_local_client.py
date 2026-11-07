@@ -8,12 +8,12 @@ from pathlib import Path
 import shutil
 import urllib.request
 
-GAME_ROOT = Path(r"C:\Users\cxmnbt\Downloads\Compressed\.minecraft")
+GAME_ROOT = Path(r"E:\PCL 正式版 2.13.0.1\.minecraft")
 PROJECT = Path(__file__).resolve().parents[1]
-NAME = "Cinema-R2-1.21.1-Fabric"
+NAME = "Cinema-R2-26.1.2-Fabric"
 INSTANCE = GAME_ROOT / "versions" / NAME
-JAVA_SOURCE = PROJECT / ".tools" / "jdk-21.0.12.1+1"
-JAVA_HOME = Path(r"E:\mc\runtime\jdk-21")
+JAVA_SOURCE = PROJECT / ".tools" / "pcl-java25-runtime"
+JAVA_HOME = INSTANCE / "jre25"
 MPV_LIBRARY = Path(r"E:\mc\runtime\libmpv-20261009\libmpv-2.dll")
 ASSETS_SOURCE = Path.home() / ".gradle" / "caches" / "fabric-loom" / "assets"
 
@@ -56,16 +56,16 @@ def main():
     if metadata_path.exists():
         raise RuntimeError("Cinema instance already exists; inspect it before re-running installation")
     manifest = json_url("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
-    base = json_url(next(v["url"] for v in manifest["versions"] if v["id"] == "1.21.1"))
-    fabric = json_url("https://meta.fabricmc.net/v2/versions/loader/1.21.1/0.16.10/profile/json")
+    base = json_url(next(v["url"] for v in manifest["versions"] if v["id"] == "26.1.2"))
+    fabric = json_url("https://meta.fabricmc.net/v2/versions/loader/26.1.2/0.19.5/profile/json")
     merged = dict(base)
-    merged.update(id=NAME, clientVersion="1.21.1", mainClass=fabric["mainClass"])
+    merged.update(id=NAME, clientVersion="26.1.2", mainClass=fabric["mainClass"])
     merged["libraries"] = base["libraries"] + fabric["libraries"]
     merged["arguments"] = {kind: base.get("arguments", {}).get(kind, []) + fabric.get("arguments", {}).get(kind, []) for kind in ("game", "jvm")}
     jobs = []
     client = base["downloads"]["client"]
     client_target = INSTANCE / (NAME + ".jar")
-    cached_client = Path.home() / ".gradle/caches/fabric-loom/1.21.1/minecraft-client.jar"
+    cached_client = Path.home() / ".gradle/caches/fabric-loom/26.1.2/minecraft-client.jar"
     if cached_client.exists() and hashlib.sha1(cached_client.read_bytes()).hexdigest() == client["sha1"]:
         shutil.copy2(cached_client, client_target)
     else:
@@ -92,28 +92,42 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         list(pool.map(download, jobs))
     print(f"Verified/downloaded {len(jobs)} official runtime artifacts", flush=True)
-    if not ASSETS_SOURCE.exists():
-        raise RuntimeError("Expected verified Loom assets cache is unavailable")
-    shutil.copytree(ASSETS_SOURCE, GAME_ROOT / "assets", dirs_exist_ok=True)
+    index_info=base["assetIndex"]
+    index_target=GAME_ROOT / "assets/indexes" / (index_info["id"]+".json")
+    download((index_info["url"],index_target,index_info["sha1"]))
+    asset_index=json.loads(index_target.read_text(encoding="utf-8"))
+    asset_jobs=[]
+    for obj in asset_index["objects"].values():
+        digest=obj["hash"];target=GAME_ROOT / "assets/objects" / digest[:2] / digest
+        if target.is_file() and target.stat().st_size==obj["size"]:continue
+        cached=ASSETS_SOURCE / "objects" / digest[:2] / digest
+        if cached.is_file() and hashlib.sha1(cached.read_bytes()).hexdigest()==digest:
+            target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(cached,target)
+        else:asset_jobs.append(("https://resources.download.minecraft.net/"+digest[:2]+"/"+digest,target,digest))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:list(pool.map(download,asset_jobs))
+    print(f"Verified {len(asset_index['objects'])} assets; downloaded {len(asset_jobs)} missing objects",flush=True)
     shutil.copytree(JAVA_SOURCE, JAVA_HOME, dirs_exist_ok=True)
     mods = INSTANCE / "mods"
     mods.mkdir(exist_ok=True)
-    shutil.copy2(PROJECT / "dist/cinema-r2-0.3.0.jar", mods)
-    api_url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/0.116.12+1.21.1/fabric-api-0.116.12+1.21.1.jar"
+    shutil.copy2(PROJECT / "build/libs/cinema-r2-0.4.3.jar", mods)
+    api_url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/0.155.3+26.1.2/fabric-api-0.155.3+26.1.2.jar"
     with urllib.request.urlopen(api_url + ".sha1", timeout=60) as response:
         api_sha = response.read().decode().strip()
-    download((api_url, mods / "fabric-api-0.116.12+1.21.1.jar", api_sha))
+    download((api_url, mods / "fabric-api-0.155.3+26.1.2.jar", api_sha))
     config = INSTANCE / "config"
     config.mkdir(exist_ok=True)
-    (config / "cinemar2-client.json").write_text(json.dumps({"mpvLibraryPath": str(MPV_LIBRARY), "volume": 0.7, "diskCache": True, "cacheDiskGB": 8, "cacheMemoryMB": 512, "cacheDirectory": "E:/mc/cinema-cache"}, indent=2), encoding="utf8")
+    native=INSTANCE / "cinema-native/windows-x86_64/libmpv-2.dll"
+    native.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(MPV_LIBRARY,native)
+    (config / "cinemar2-client.json").write_text(json.dumps({"mpvLibraryPath": "./cinema-native/windows-x86_64/libmpv-2.dll", "volume": 0.7, "audioBoost": 1.5, "diskCache": True, "cacheDiskGB": 8, "cacheMemoryMB": 512, "cacheDirectory": "cinema-cache"}, indent=2), encoding="utf8")
     # Dedicated-server media settings are configured separately by the console bridge.
     if not (config / "cinemar2-server.json").exists():
-        (config / "cinemar2-server.json").write_text(json.dumps({"allowedMediaHosts": [], "viewDistance": 64}, indent=2), encoding="utf8")
+        (config / "cinemar2-server.json").write_text(json.dumps({"allowedMediaHosts": ["video.mc.cxmlbt-tec.top","live.mc.acgzjd.cn","live.al.mc.acgzjd.cn"], "viewDistance": 256, "protectCinema": False, "managementUrl": "", "managementToken": ""}, indent=2), encoding="utf8")
     pcl = INSTANCE / "PCL"
     pcl.mkdir(exist_ok=True)
     java_bin = str(JAVA_HOME / "bin") + "\\"
-    selected_java = {"Path": java_bin, "VersionString": "21.0.12", "IsJre": False, "Is64Bit": True, "IsUserImport": True}
-    settings = "VersionArgumentIndie:1\nVersionArgumentIndieV2:True\nVersionArgumentTitle:Cinema R2\nVersionArgumentJavaSelect:" + json.dumps(selected_java, ensure_ascii=False) + "\n"
+    selected_java = {"Path": java_bin, "VersionString": "25.0.4.1", "IsJre": False, "Is64Bit": True, "IsUserImport": True}
+    settings = "VersionArgumentIndie:1\nVersionArgumentIndieV2:True\nVersionArgumentTitle:Cinema R2 26.1.2\nVersionArgumentJavaV2:2\n"
+    (pcl / "config.json").write_text(json.dumps({"InstanceMigratedJava":True}),encoding="utf-8")
     (pcl / "Setup.ini").write_text(settings, encoding="utf-8-sig")
     metadata_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf8")
     # Validate all shared hashed asset files referenced by this Minecraft version.

@@ -13,6 +13,7 @@ import { randomUUID, createHash } from "node:crypto";
 import {
   S3Client,
   PutObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   CreateMultipartUploadCommand,
   UploadPartCommand,
@@ -20,18 +21,41 @@ import {
   AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { root, state, settings, save, event } from "./model.mjs";
+import {hlsPlan,hlsCodecArgs,checkHlsSegments,clearGeneratedHls,SEGMENT_SECONDS} from "./media-plan.mjs";
+import {publishFiles,retryUpload} from "./publish-files.mjs";
 export const jobs = [];
-export function run(bin, args) {
+export function progressReader(onProgress){
+  let buffer="",values={};
+  return chunk=>{
+    buffer+=chunk;
+    let at;
+    while((at=buffer.indexOf("\n"))>=0){
+      const line=buffer.slice(0,at).trim();buffer=buffer.slice(at+1);
+      const separator=line.indexOf("=");if(separator<0)continue;
+      values[line.slice(0,separator)]=line.slice(separator+1);
+      if(line.startsWith("progress=")){
+        const time=Number(values.out_time_us??values.out_time_ms)/1e6;
+        const speed=parseFloat(values.speed);
+        onProgress({seconds:Number.isFinite(time)?Math.max(0,time):0,speed:Number.isFinite(speed)&&speed>0?speed:null,ended:values.progress==="end"});
+        values={};
+      }
+    }
+    if(buffer.length>65536)buffer=buffer.slice(-65536);
+  };
+}
+export function run(bin, args, {onProgress}={}) {
   return new Promise((resolve, reject) => {
     const p = spawn(bin, args, { windowsHide: true });
     let out = "",
       err = "";
-    p.stdout.on("data", (b) => (out += b));
+    const progress=onProgress?progressReader(onProgress):null;
+    p.stdout.setEncoding("utf8");
+    p.stdout.on("data", (b) => progress?progress(b):(out += b));
     p.stderr.on("data", (b) => (err = (err + b).slice(-4000)));
     p.on("error", () =>
       reject(Error("无法启动媒体工具，请检查 FFmpeg/FFprobe 路径")),
     );
-    p.on("exit", (code) =>
+    p.on("close", (code) =>
       code === 0
         ? resolve(out)
         : reject(
@@ -41,6 +65,20 @@ export function run(bin, args) {
           ),
     );
   });
+}
+function phase(j,label,progress){
+  j.phase=label;j.updatedAt=Date.now();j.progress=Math.max(j.progress||0,progress);
+  delete j.speed;delete j.etaSeconds;delete j.processedSeconds;delete j.durationSeconds;
+}
+async function encode(args,j,duration,start,end,label){
+  phase(j,label,start);j.durationSeconds=duration;
+  await run(settings.ffmpeg,["-progress","pipe:1","-nostats",...args],{onProgress:({seconds,speed})=>{
+    j.processedSeconds=duration>0?Math.min(seconds,duration):seconds;
+    j.speed=speed;j.updatedAt=Date.now();
+    j.etaSeconds=duration>seconds&&speed?(duration-seconds)/speed:null;
+    if(duration>0)j.progress=Math.max(j.progress,Math.min(end,Math.floor(start+(end-start)*seconds/duration)));
+  }});
+  j.progress=end;j.processedSeconds=duration;delete j.etaSeconds;
 }
 export function s3() {
   if (!settings.r2.accessKeyId || !settings.r2.secretAccessKey)
@@ -66,6 +104,7 @@ export async function putFile(
   file,
   key,
   cache = "public, max-age=31536000, immutable",
+  {onProgress,skipExisting=false} = {},
 ) {
   const size = (await stat(file)).size;
   const ContentType =
@@ -74,6 +113,15 @@ export async function putFile(
   const Bucket = settings.r2.bucket;
   const hash=createHash("sha256");for await(const chunk of createReadStream(file))hash.update(chunk);
   const Metadata={sha256:hash.digest("hex")};
+  if(skipExisting){
+    let existing;
+    try{existing=await client.send(new HeadObjectCommand({Bucket,Key:key}));}
+    catch(error){if(error.$metadata?.httpStatusCode!==404&&!['NotFound','NoSuchKey'].includes(error.name))throw error;}
+    if(existing){
+      if(existing.ContentLength!==size||existing.Metadata?.sha256!==Metadata.sha256){const error=Error('R2 对象内容冲突，未覆盖：'+key);error.code='R2_OBJECT_CONFLICT';throw error;}
+      onProgress?.(size,size);return;
+    }
+  }
   if (size < 64 * 1024 * 1024) {
     await client.send(
       new PutObjectCommand({
@@ -87,6 +135,7 @@ export async function putFile(
         Metadata,
       }),
     );
+    onProgress?.(size,size);
     return;
   }
   const upload = await client.send(
@@ -121,6 +170,7 @@ export async function putFile(
         }),
       );
       parts.push({ PartNumber: part, ETag: result.ETag });
+      onProgress?.(offset+length,size);
     }
     await client.send(
       new CompleteMultipartUploadCommand({
@@ -165,6 +215,7 @@ export function job(name, action) {
     status: "running",
     progress: 0,
     created: Date.now(),
+    phase: "等待处理",
   };
   jobs.unshift(j);
   if (jobs.length > 30) jobs.length = 30;
@@ -173,11 +224,13 @@ export function job(name, action) {
     .then(() => {
       j.status = "done";
       j.progress = 100;
+      j.phase="已完成";j.finishedAt=j.updatedAt=Date.now();delete j.etaSeconds;delete j.speed;
       event(name + "完成");
     })
     .catch((e) => {
       j.status = "error";
-      j.error = e.message.replace(
+      j.phase="处理失败";j.finishedAt=j.updatedAt=Date.now();delete j.etaSeconds;delete j.speed;
+      j.error = (e.message||[e.name,e.code,e.errors?.[0]?.code].filter(Boolean).join(': ')||"网络或媒体处理失败").replace(
         settings.r2.secretAccessKey || "__none__",
         "[隐藏]",
       );
@@ -187,7 +240,10 @@ export function job(name, action) {
 }
 let publishTail = Promise.resolve();
 export async function publishResource(resource, j = {}) {
+  const start=Math.min(95,j.progress||0);
+  phase(j,"等待 R2 同步",start);
   const task = publishTail.then(async () => {
+    phase(j,"检查 R2 存储预算",start);
     const client = s3();
     const dir = join(root, "resources", resource.id);
     const names =
@@ -204,16 +260,37 @@ export async function publishResource(resource, j = {}) {
       bytes += (
         await stat(join(dir, resource.format === "hls" ? "hls" : "", n))
       ).size;
-    if ((await bucketBytes(client)) + bytes > settings.r2.storageLimitGB * 1e9)
-      throw Error("上传后将超过 R2 存储预算，请清理或调整预算");
-    for (let i = 0; i < names.length; i++) {
-      await putFile(
-        client,
-        join(dir, resource.format === "hls" ? "hls" : "", names[i]),
-        "media/" + resource.id + "/" + names[i],
-      );
-      j.progress = Math.round(((i + 1) / names.length) * 90);
+    const existing=new Map();let continuation;
+    do{
+      const page=await retryUpload(()=>client.send(new ListObjectsV2Command({Bucket:settings.r2.bucket,Prefix:'media/'+resource.id+'/',ContinuationToken:continuation})));
+      for(const item of page.Contents||[])existing.set(item.Key,item.Size||0);
+      continuation=page.IsTruncated?page.NextContinuationToken:undefined;
+    }while(continuation);
+    let missing=0;
+    for(const name of names){
+      const key='media/'+resource.id+'/'+name,size=(await stat(join(dir,resource.format==='hls'?'hls':'',name))).size;
+      if(!existing.has(key))missing+=size;
+      else if(existing.get(key)!==size){const error=Error('R2 对象长度冲突，未覆盖：'+key);error.code='R2_OBJECT_CONFLICT';throw error;}
     }
+    if ((await retryUpload(()=>bucketBytes(client))) + missing > settings.r2.storageLimitGB * 1e9)
+      throw Error("上传后将超过 R2 存储预算，请清理或调整预算");
+    phase(j,"同步到 R2",start);j.totalFiles=names.length;j.filesDone=0;j.totalBytes=bytes;j.uploadedBytes=0;
+    const confirmedByFile=new Map();
+    await publishFiles(names,async name=>{
+      await retryUpload(()=>putFile(
+        client,
+        join(dir, resource.format === "hls" ? "hls" : "", name),
+        "media/" + resource.id + "/" + name,
+        undefined,
+        {skipExisting:true,onProgress:confirmed=>{
+          confirmedByFile.set(name,confirmed);
+          j.uploadedBytes=[...confirmedByFile.values()].reduce((sum,n)=>sum+n,0);
+          j.progress=Math.max(j.progress||0,Math.min(99,Math.round(start+(bytes?j.uploadedBytes/bytes:0)*(99-start))));
+          j.updatedAt=Date.now();
+        }},
+      ));
+      j.filesDone++;j.updatedAt=Date.now();
+    });
     resource.url =
       settings.publicBase.replace(/\/$/, "") +
       "/media/" +
@@ -223,12 +300,15 @@ export async function publishResource(resource, j = {}) {
     resource.storage = "r2";
     resource.publishedBytes = bytes;
     resource.replicas={local:"ready",r2:"ready",verifiedAt:Date.now(),files:names.length,bytes};
+    delete resource.error;
     save();
   });
   publishTail = task.catch(() => {});
-  return task;
+  try{return await task;}
+  catch(error){resource.replicas={...resource.replicas,r2:'error',syncError:error.message||error.name||'R2 同步失败'};save();throw error;}
 }
 export async function processUpload(resource, file, j) {
+  phase(j,"读取媒体信息",2);
   const dir = join(root, "resources", resource.id);
   await mkdir(dir, { recursive: true });
   const original = join(dir, "original.mp4");
@@ -257,7 +337,7 @@ export async function processUpload(resource, file, j) {
     const inputs=resource.mediaType==='audio'
       ?['-f','lavfi','-i',`color=c=0x162b26:s=${width}x${height}:r=24`,'-i',source,'-map','0:v:0','-map','1:a:0','-vf',`drawbox=x=iw*0.15:y=ih*0.3:w=iw*0.7:h=ih*0.4:color=0x315b4c:t=fill,drawbox=x=iw*0.46:y=ih*0.36:w=iw*0.014:h=ih*0.24:color=white:t=fill,drawbox=x=iw*0.57:y=ih*0.36:w=iw*0.014:h=ih*0.24:color=white:t=fill,drawbox=x=iw*0.46:y=ih*0.36:w=iw*0.124:h=ih*0.035:color=white:t=fill,drawbox=x=iw*0.41:y=ih*0.59:w=iw*0.064:h=ih*0.045:color=white:t=fill,drawbox=x=iw*0.52:y=ih*0.59:w=iw*0.064:h=ih*0.045:color=white:t=fill`]
       :['-loop','1','-framerate','24','-i',source,'-vf',`scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=0x101818,setsar=1`];
-    await run(settings.ffmpeg,['-y','-hide_banner','-loglevel','error',...inputs,'-t',String(duration),'-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart',original]);
+    await encode(['-y','-hide_banner','-loglevel','error',...inputs,'-t',String(duration),'-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart',original],j,duration,3,30,resource.mediaType==='audio'?'生成音频播放画面':'生成图片播放画面');
     Object.assign(probe,JSON.parse(await run(settings.ffprobe,['-v','error','-show_format','-show_streams','-of','json',original])));
   }
   const v = probe.streams?.find((x) => x.codec_type === "video");
@@ -267,6 +347,8 @@ export async function processUpload(resource, file, j) {
   resource.size = (await stat(original)).size;
   resource.width = v.width;
   resource.height = v.height;
+  const processingStart=resource.mediaType==='audio'||resource.mediaType==='image'?35:15;
+  phase(j,"生成封面",processingStart-2);
   await run(settings.ffmpeg, [
     "-y",
     "-hide_banner",
@@ -282,7 +364,7 @@ export async function processUpload(resource, file, j) {
     "scale=480:-1",
     join(dir, "poster.jpg"),
   ]);
-  j.progress = 15;
+  j.progress = processingStart;
   if (resource.format === "mp4") {
     const compatible =
       v.codec_name === "h264" &&
@@ -290,7 +372,7 @@ export async function processUpload(resource, file, j) {
         probe.streams.find((x) => x.codec_type === "audio").codec_name ===
           "aac");
     const normalized = join(dir, "normalized.mp4");
-    await run(settings.ffmpeg, [
+    await encode([
       "-y",
       "-hide_banner",
       "-loglevel",
@@ -320,60 +402,37 @@ export async function processUpload(resource, file, j) {
       "-movflags",
       "+faststart",
       normalized,
-    ]);
+    ],j,resource.duration,processingStart,80,compatible?'整理 MP4（保留原画质）':'转换为兼容 MP4');
     await unlink(original);
     await rename(normalized, original);
     resource.size = (await stat(original)).size;
   }
   if (resource.format === "hls") {
-    await mkdir(join(dir, "hls"), { recursive: true });
-    await run(settings.ffmpeg, [
-      "-y",
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-i",
-      original,
-      "-map",
-      "0:v:0",
-      "-map",
-      "0:a:0?",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "23",
-      "-vf",
-      resource.quality === 1080
-        ? "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
-        : "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-      "-pix_fmt",
-      "yuv420p",
-      "-r",
-      "24",
-      "-g",
-      "288",
-      "-keyint_min",
-      "288",
-      "-sc_threshold",
-      "0",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "128k",
-      "-f",
-      "hls",
-      "-hls_time",
-      "12",
-      "-hls_playlist_type",
-      "vod",
-      "-hls_flags",
-      "independent_segments+temp_file",
-      "-hls_segment_filename",
-      join(dir, "hls", "segment_%05d.ts"),
-      join(dir, "hls", "index.m3u8"),
-    ]);
+    const directory=join(dir,"hls");await mkdir(directory,{recursive:true});
+    let plan=hlsPlan(probe,resource.quality,{preserveHevc:resource.preserveHevc===true}),verified;
+    const segment=async(start,end)=>{
+      j.processingLabel=plan.label;j.mode=plan.mode;
+      await encode([
+        "-y","-hide_banner","-loglevel","error","-i",original,"-map","0:v:0","-map","0:a:0?",
+        ...hlsCodecArgs(plan,resource.quality),"-f","hls","-hls_time",String(SEGMENT_SECONDS),
+        "-hls_playlist_type","vod","-hls_flags","independent_segments+temp_file",
+        "-hls_segment_filename",join(directory,"segment_%05d.ts"),join(directory,"index.m3u8")
+      ],j,resource.duration,start,end,plan.label);
+      return checkHlsSegments(directory,{copy:plan.videoCopy});
+    };
+    if(plan.videoCopy){
+      try{verified=await segment(processingStart,55);}
+      catch(error){
+        await clearGeneratedHls(directory);
+        if(resource.preserveHevc&&plan.videoCodec==="hevc")throw Error("保留 H.265 分片校验失败，未自动重编码："+error.message);
+        j.detail="快速分片不满足播放要求，已转为兼容编码";
+        plan={...plan,videoCopy:false,mode:"transcode",label:"兼容转码并分片"};
+        verified=await segment(55,80);
+      }
+    }else verified=await segment(processingStart,80);
+    j.progress=80;
+    resource.videoCodec=plan.videoCopy?plan.videoCodec:"h264";
+    resource.processing={mode:plan.mode,videoCodec:resource.videoCodec,videoCopied:plan.videoCopy,audioCopied:plan.audioCopy,segments:verified.files,maxSegmentSeconds:verified.maxSeconds};
   }
   resource.url =
     "http://127.0.0.1:3210/media/local/" +
@@ -385,7 +444,7 @@ export async function processUpload(resource, file, j) {
   resource.replicas = {local:"ready",r2:"pending"};
   if(settings.delivery?.cdnBase) resource.url=settings.publicBase.replace(/\/$/,"")+"/media/"+resource.id+"/"+(resource.format==="hls"?"index.m3u8":"original.mp4");
   save();
-  j.progress = 65;
+  phase(j,"本地媒体已就绪",82);
   if (settings.r2.accessKeyId && settings.r2.secretAccessKey)
     try { await publishResource(resource, j); }
     catch(error){resource.replicas={local:"ready",r2:"error",syncError:error.message};save();throw error;}

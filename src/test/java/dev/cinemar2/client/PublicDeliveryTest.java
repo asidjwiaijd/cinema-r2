@@ -8,6 +8,17 @@ import static org.junit.jupiter.api.Assertions.*;
 @EnabledIfEnvironmentVariable(named="CINEMA_PUBLIC_TEST",matches="true")
 class PublicDeliveryTest {
     ClientSettings settings(){var s=new ClientSettings();s.mpvLibraryPath=System.getProperty("cinema.mpv");s.cacheDirectory=Path.of(".tools/public-cache").toAbsolutePath().toString();return s;}
+    @Test void directNativeHttpsUsesSystemTrustAndSupportsRangeSeek()throws Exception{
+        var s=settings();s.r2Failover=false;
+        try(var player=new MpvCore(s,"https://video.mc.cxmlbt-tec.top/media/0dc49f63-a8f7-4fa7-b932-aae811df1398/original.mp4",1000,false,0,false,12,true,720,600,1)){
+            long end=System.currentTimeMillis()+20000;
+            while((!player.hasFrames()||player.stats().audioDevice().isEmpty())&&player.error().isEmpty()&&System.currentTimeMillis()<end)Thread.sleep(30);
+            assertEquals("",player.error());assertTrue(player.hasFrames());assertFalse(player.stats().audioDevice().isEmpty());
+            assertTrue(Math.abs(player.stats().positionMs()-1000)<150);
+            var field=MpvCore.class.getDeclaredField("relay");field.setAccessible(true);assertNull(field.get(player));
+            System.out.println("Direct native HTTPS: system roots, no custom CA or Java relay, Range seek decoded with audio");
+        }
+    }
     @Test void realPaidBackupDecodesWhenBothPreferredRoutesAreUnreachable()throws Exception{
         String path="/media/14250248-d8c9-492e-be66-d9e6ff70e548/index.m3u8";
         URI paid=URI.create("https://live.al.mc.acgzjd.cn"),unreachable=URI.create("https://127.0.0.1:1");

@@ -22,12 +22,13 @@ class VodSegmentCacheTest {
     final AtomicLong bytes=new AtomicLong();
     final AtomicInteger coldDelayMs=new AtomicInteger();
     CountDownLatch release=new CountDownLatch(0);
+    volatile String bypassHold="";
     final AtomicBoolean permit=new AtomicBoolean(true);
     @BeforeEach void start()throws Exception{
         handlers=Executors.newVirtualThreadPerTaskExecutor();
         for(int i=0;i<3;i++){final int provider=i;servers[i]=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);servers[i].setExecutor(handlers);servers[i].createContext("/",e->{
             int n=provider==0?active.incrementAndGet():0;if(provider==0)peak.accumulateAndGet(n,Math::max);
-            try{counts.incrementAndGet(provider);if(provider==0){requested.add(e.getRequestURI().getPath());release.await(5,TimeUnit.SECONDS);if(e.getRequestURI().getPath().endsWith("/segment_0.ts"))Thread.sleep(coldDelayMs.get());}
+            try{counts.incrementAndGet(provider);if(provider==0){requested.add(e.getRequestURI().getPath());if(!e.getRequestURI().getPath().endsWith("/"+bypassHold))release.await(5,TimeUnit.SECONDS);if(e.getRequestURI().getPath().endsWith("/segment_0.ts"))Thread.sleep(coldDelayMs.get());}
                 if(provider==0&&r2Broken.get()||provider==1&&eoBroken.get()){e.sendResponseHeaders(503,-1);return;}
                 e.sendResponseHeaders(200,content.length);e.getResponseBody().write(content);
             }catch(Exception ignored){}finally{e.close();if(provider==0)active.decrementAndGet();}
@@ -94,15 +95,56 @@ class VodSegmentCacheTest {
             Thread.sleep(200);assertEquals(0,counts.get(0));assertEquals(0,cache.diskBytes());
         }
     }
-    @Test void explicitPastProbeCompletesButFutureReadsDoNotExpand600SecondWindow()throws Exception{
+    @Test void explicitPastAndFutureReadsCompleteWithoutExpandingSpeculativeWindow()throws Exception{
         try(var cache=cache(false)){
             cache.seek(180);cache.register(list(90));until(()->cache.cached("segment_64.ts"));
             assertFalse(cache.cached("segment_0.ts"));assertFalse(cache.cached("segment_65.ts"));
             var probe=CompletableFuture.supplyAsync(()->{try(var in=cache.open("segment_0.ts",cache.epoch())){return in.readAllBytes();}catch(Exception e){throw new RuntimeException(e);}});
             assertArrayEquals(content,probe.get(5,TimeUnit.SECONDS));assertTrue(requested.contains("/media/fixture/segment_0.ts"));
-            long epoch=cache.epoch();var future=CompletableFuture.runAsync(()->{try(var in=cache.open("segment_65.ts",epoch)){fail("Future request must wait for the horizon");}catch(java.io.InterruptedIOException expected){}catch(Exception e){throw new RuntimeException(e);}});
-            Thread.sleep(300);assertFalse(future.isDone());assertFalse(requested.contains("/media/fixture/segment_65.ts"));
-            cache.seek(180);future.get(2,TimeUnit.SECONDS);
+            long epoch=cache.epoch();var future=CompletableFuture.supplyAsync(()->{try(var in=cache.open("segment_65.ts",epoch)){return in.readAllBytes();}catch(Exception e){throw new RuntimeException(e);}});
+            assertArrayEquals(content,future.get(3,TimeUnit.SECONDS));
+            assertTrue(requested.contains("/media/fixture/segment_65.ts"));
+            assertFalse(requested.contains("/media/fixture/segment_66.ts"),"Demand must not move the 600s prefetch window");
+            assertEquals(epoch,cache.epoch(),"Probing must not seek or invalidate the existing cache");
+        }
+    }
+    @Test void observedMidMovieReadOfLastSegmentNeverWaitsForPlaybackToReachIt()throws Exception{
+        try(var cache=cache(true)){
+            cache.seek(614.678);
+            cache.register(List.of(new VodSegmentCache.Segment("current.ts",614,12),new VodSegmentCache.Segment("last.ts",1418.083356,6.924044)));
+            until(()->cache.cached("current.ts"));assertFalse(requested.contains("/media/fixture/last.ts"));
+            long epoch=cache.epoch();var result=CompletableFuture.supplyAsync(()->{try(var in=cache.open("last.ts",epoch)){return in.readAllBytes();}catch(Exception e){throw new RuntimeException(e);}});
+            assertArrayEquals(content,result.get(3,TimeUnit.SECONDS));
+            assertEquals(epoch,cache.epoch());assertTrue(cache.cached("current.ts"));
+            assertEquals(0,counts.get(1),"An explicit future read must not bypass the 40s EO deadline");
+            assertEquals(0,counts.get(2),"An explicit future read must not bypass the 20s paid deadline");
+        }
+    }
+    @Test void demandedSegmentPreemptsSpeculativeWorkWhenAllSixR2SlotsAreBusy()throws Exception{
+        release=new CountDownLatch(1);bypassHold="segment_70.ts";
+        try(var cache=cache(false)){
+            cache.register(list(80));until(()->active.get()==6);
+            var result=CompletableFuture.supplyAsync(()->{try(var in=cache.open("segment_70.ts",cache.epoch())){return in.readAllBytes();}catch(Exception e){throw new RuntimeException(e);}});
+            assertArrayEquals(content,result.get(3,TimeUnit.SECONDS),"Active demux reads must not wait behind stalled prefetches");
+            assertTrue(cache.peakR2()<=6);assertEquals(0,counts.get(1));assertEquals(0,counts.get(2));
+        }
+    }
+    @Test void unavailableDemandReadReturnsARetryableTimeoutInsteadOfWaitingForever()throws Exception{
+        r2Broken.set(true);
+        try(var cache=new VodSegmentCache(temp,256L*1024*1024,base(0),base(1),base(2),HttpClient.newHttpClient(),100,1500,()->true,()->true,(p,n)->{},0,300)){
+            cache.register(List.of(new VodSegmentCache.Segment("last.ts",1418,7)));
+            assertThrows(java.net.SocketTimeoutException.class,()->cache.open("last.ts",cache.epoch()));
+            assertTrue(counts.get(0)>0);assertEquals(0,counts.get(1));assertEquals(0,counts.get(2));
+            assertTrue(cache.failure().contains("last.ts"));
+        }
+    }
+    @Test void seekCancelsAnExplicitOutOfWindowReadWithoutPublishingIt()throws Exception{
+        r2Broken.set(true);
+        try(var cache=cache(false)){
+            cache.register(List.of(new VodSegmentCache.Segment("last.ts",1418,7)));long epoch=cache.epoch();
+            var result=CompletableFuture.runAsync(()->{assertThrows(java.io.InterruptedIOException.class,()->cache.open("last.ts",epoch));});
+            until(()->counts.get(0)>0);cache.seek(100);result.get(2,TimeUnit.SECONDS);
+            assertFalse(cache.cached("last.ts"));assertEquals(0,cache.diskBytes());
         }
     }
 }

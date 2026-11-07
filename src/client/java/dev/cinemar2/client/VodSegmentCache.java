@@ -24,6 +24,7 @@ final class VodSegmentCache implements AutoCloseable {
     private final Set<Job> jobs=new HashSet<>();
     private final long diskLimit;
     private final int r2TimeoutMs,eoTimeoutMs;
+    private final long readTimeoutNanos;
     private volatile double position;
     private volatile boolean closed;
     private boolean advancing;
@@ -46,6 +47,12 @@ final class VodSegmentCache implements AutoCloseable {
     }
     VodSegmentCache(Path base,long diskLimit,URI r2,URI eo,URI paid,HttpClient http,int r2TimeoutMs,int eoTimeoutMs,
                     BooleanSupplier eoAllowed,BooleanSupplier paidAllowed,BiConsumer<Integer,Long> account,double initialPosition)throws IOException{
+        this(base,diskLimit,r2,eo,paid,http,r2TimeoutMs,eoTimeoutMs,eoAllowed,paidAllowed,account,initialPosition,180000);
+    }
+    VodSegmentCache(Path base,long diskLimit,URI r2,URI eo,URI paid,HttpClient http,int r2TimeoutMs,int eoTimeoutMs,
+                    BooleanSupplier eoAllowed,BooleanSupplier paidAllowed,BiConsumer<Integer,Long> account,double initialPosition,long readTimeoutMs)throws IOException{
+        if(readTimeoutMs<=0)throw new IllegalArgumentException("Read timeout must be positive");
+        readTimeoutNanos=TimeUnit.MILLISECONDS.toNanos(readTimeoutMs);
         Files.createDirectories(base);directory=Files.createTempDirectory(base.toAbsolutePath().normalize(),"vod-segments-");
         this.diskLimit=Math.max(256L*1024*1024,diskLimit);origins=new URI[]{r2,eo,paid};this.http=http;
         this.r2TimeoutMs=r2TimeoutMs;this.eoTimeoutMs=eoTimeoutMs;this.eoAllowed=eoAllowed;this.paidAllowed=paidAllowed;this.account=account;position=Math.max(0,initialPosition);
@@ -75,9 +82,15 @@ final class VodSegmentCache implements AutoCloseable {
         evict();notifyAll();
     }
     private boolean inWindow(Entry e,double p){return e.segment.start()+e.segment.duration()>p-12&&e.segment.start()<p+horizon;}
-    // libavformat probes early TS packets even when loadfile starts in the middle.
-    // Honor explicit past reads without extending speculative future prefetch.
-    private boolean wanted(Entry e,double p){return inWindow(e,p)&&e.segment.start()+e.segment.duration()>p||e.waiters>0&&e.segment.start()+e.segment.duration()<=p;}
+    // The demuxer can probe either end of a movie during startup or a seek.
+    // Only speculative downloads are limited by the 600-second horizon.
+    private boolean wanted(Entry e,double p){return e.waiters>0||inWindow(e,p)&&e.segment.start()+e.segment.duration()>p;}
+    private void prioritizeDemand(double p,long now){
+        if(jobs.stream().filter(j->j.provider==0).count()<6||jobs.stream().anyMatch(j->j.provider==0&&j.canceled))return;
+        boolean waiting=entries.values().stream().anyMatch(e->!e.ready&&e.waiters>0&&e.jobs[0]==null&&now>=e.retryAt[0]);
+        if(waiting)jobs.stream().filter(j->j.provider==0&&j.entry.waiters==0)
+            .max(Comparator.comparingDouble(j->Math.abs(j.entry.segment.start()-p))).ifPresent(Job::cancel);
+    }
     private void evict(){
         double p=nowPosition();for(var e:entries.values())if(e.ready&&e.readers==0&&e.waiters==0&&!inWindow(e,p)){
             try{Files.deleteIfExists(e.file);diskBytes-=e.size;e.ready=false;e.size=0;e.provider=-1;}catch(IOException ignored){}
@@ -90,7 +103,9 @@ final class VodSegmentCache implements AutoCloseable {
                 int limit=j.provider==0?Math.max(r2TimeoutMs,120000):j.provider==1?eoTimeoutMs:15000;
                 if(j.epoch!=generation||j.entry.ready||!wanted(j.entry,p)||now-j.startedAt>TimeUnit.MILLISECONDS.toNanos(limit)||j.provider==1&&!eoAllowed.getAsBoolean()||j.provider==2&&!paidAllowed.getAsBoolean())j.cancel();
             }
-            var wanted=entries.values().stream().filter(e->!e.ready&&wanted(e,p)).sorted(Comparator.comparingDouble(e->e.segment.start())).toList();
+            prioritizeDemand(p,now);
+            var wanted=entries.values().stream().filter(e->!e.ready&&wanted(e,p))
+                .sorted(Comparator.<Entry>comparingInt(e->e.waiters>0?0:1).thenComparingDouble(e->e.segment.start())).toList();
             for(var e:wanted){
                 double distance=e.segment.start()-p;
                 schedule(e,0,now);
@@ -145,9 +160,14 @@ final class VodSegmentCache implements AutoCloseable {
     }
     synchronized InputStream open(String file,long epoch)throws Exception{
         var e=entries.get(file);if(e==null)throw new IOException("片段未登记在点播清单中");
+        long began=System.nanoTime();
         e.waiters++;
         try{
-        while(!e.ready){if(closed||epoch!=generation)throw new InterruptedIOException("播放位置已改变");wait(100);}
+        while(!e.ready){
+            if(closed||epoch!=generation)throw new InterruptedIOException("播放位置已改变");
+            if(System.nanoTime()-began>=readTimeoutNanos){failure="分片等待超时："+file;throw new java.net.SocketTimeoutException(failure);}
+            wait(Math.max(1,Math.min(100,TimeUnit.NANOSECONDS.toMillis(readTimeoutNanos-(System.nanoTime()-began)))));
+        }
         if(closed||epoch!=generation)throw new InterruptedIOException("播放位置已改变");
         route=switch(e.provider){case 1->"EO · 40 秒内补片";case 2->"阿里云 · 20 秒内兜底";default->"R2 · 6 路预取";};failure="";
         var stream=Files.newInputStream(e.file);e.readers++;

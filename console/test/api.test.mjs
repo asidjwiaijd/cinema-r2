@@ -113,6 +113,8 @@ test("acknowledgement removes only executed commands; create IDs cannot overwrit
   assert.equal(created.status, 202);
   let reply = await call("/api/bridge/poll", { screens: [screen] }, headers);
   const command = reply.body.commands[0];
+  assert.ok(reply.body.screenLocations.some(p=>p.dimension==="minecraft:overworld"&&p.x===2&&p.y===100&&p.z===0));
+  assert.ok(reply.body.screenLocations.every(p=>Object.keys(p).every(k=>["dimension","x","y","z"].includes(k))));
   assert.equal(command.action, "create");
   assert.notEqual(command.id, created.body.id);
   assert.equal(command.screenId, created.body.id);
@@ -140,16 +142,44 @@ test("acknowledgement removes only executed commands; create IDs cannot overwrit
   );
 });
 
-test("quality and cache policy reach the MC bridge and external variants are rejected", async () => {
+test("quality, cache and audio policy reach the MC bridge and external variants are rejected", async () => {
   const headers={Authorization:"Bearer "+token};
   const screen={id:"minecraft:overworld@0,100,0",width:12,quality:720};
   await call("/api/bridge/poll",{screens:[screen]},headers);
-  assert.equal((await call("/api/screens/"+encodeURIComponent(screen.id),{policy:{quality:1080,cacheSeconds:1200,cacheStartSeconds:20}}, {}, "PATCH")).status,200);
+  assert.equal((await call("/api/screens/"+encodeURIComponent(screen.id),{policy:{quality:1080,cacheSeconds:1200,cacheStartSeconds:20,volume:0,suppressMusic:true}}, {}, "PATCH")).status,200);
   const reply=await call("/api/bridge/poll",{screens:[screen]},headers);
   const command=reply.body.commands.find(x=>x.action==="configure");
   assert.equal(command.policy.quality,1080);assert.equal(command.policy.cacheSeconds,1200);assert.equal(command.policy.cacheStartSeconds,20);
+  assert.equal(command.policy.volume,0);assert.equal(command.policy.suppressMusic,true);
   const imported=await call("/api/resources/import",{url:"https://media.example/a.mp4"});
   assert.equal((await call("/api/resources/"+imported.body.id+"/variant",{quality:1080})).status,400);
+});
+
+test("audio mute and restore are acknowledged independently of playback and keep policy",async()=>{
+  const headers={Authorization:"Bearer "+token};
+  const screen={id:"minecraft:overworld@0,100,0",volume:75,suppressMusic:true,revision:8,seekRevision:3,url:"https://media.example/a.mp4",playing:true};
+  await call("/api/bridge/poll",{screens:[screen]},headers);
+  const path="/api/screens/"+encodeURIComponent(screen.id)+"/audio";
+  for(const invalid of [{volume:-1},{volume:101},{volume:0.5},{volume:"50"},{volume:null},{suppressMusic:"false"},{}])
+    assert.equal((await call(path,invalid)).status,400);
+  const accepted=await call(path,{volume:0});assert.equal(accepted.status,202);
+  const poll=await call("/api/bridge/poll",{screens:[screen]},headers);
+  const cmd=poll.body.commands.find(c=>c.id===accepted.body.commandIds[0]);
+  assert.equal(cmd.action,"audio");assert.equal(cmd.volume,0);assert.equal(cmd.suppressMusic,true);
+  assert.equal(cmd.source,undefined);assert.equal(cmd.positionMs,undefined);assert.equal(cmd.policy,undefined);
+  await call("/api/bridge/poll",{screens:[{...screen,volume:0}],acks:[{id:cmd.id}]},headers);
+  const state=(await call("/api/state",undefined,{},"GET")).body;
+  const actual=state.screens.find(s=>s.id===screen.id);
+  assert.equal(actual.volume,0);assert.equal(actual.revision,8);assert.equal(actual.seekRevision,3);
+  assert.equal(actual.policy.quality,1080);assert.equal(actual.policy.cacheSeconds,1200);
+  assert.equal(state.commandResults.find(c=>c.id===cmd.id).error,"");
+  const restored=await call(path,{volume:60,suppressMusic:false});
+  const second=await call("/api/bridge/poll",{screens:[{...screen,volume:0}]},headers);
+  const restore=second.body.commands.find(c=>c.id===restored.body.commandIds[0]);
+  assert.equal(restore.volume,60);assert.equal(restore.suppressMusic,false);
+  await call("/api/bridge/poll",{screens:[{...screen,volume:60,suppressMusic:false}],acks:[{id:restore.id}]},headers);
+  await call("/api/bridge/poll",{screens:[]},headers);
+  assert.equal((await call(path,{volume:50})).status,400);
 });
 
  test("take is atomic and acknowledged errors and real playback reports reach the console",async()=>{

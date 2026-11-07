@@ -1,1 +1,15 @@
-{"required":true,"package":"dev.cinemar2.mixin","compatibilityLevel":"JAVA_21","mixins":["CinemaInteractionMixin","CinemaNetworkMixin","CinemaWorldMixin","CinemaExplosionMixin"],"injectors":{"defaultRequire":1}}
+{
+  "required": true,
+  "package": "dev.cinemar2.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": ["CinemaMusicMixin"],
+  "mixins": [
+    "CinemaInteractionMixin",
+    "CinemaNetworkMixin",
+    "CinemaWorldMixin",
+    "CinemaExplosionMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

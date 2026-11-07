@@ -72,6 +72,9 @@ app.post("/api/bridge/poll", (req, res) => {
   if (token.length !== expected.length || !timingSafeEqual(token, expected))
     return res.status(401).json({ error: "Bridge 未授权" });
   const { screens = [], acks = [], serverId } = req.body;
+  const selectedServer = process.env.CINEMA_BRIDGE_SERVER_ID;
+  if (selectedServer && serverId !== selectedServer)
+    return res.status(409).json({ error: "控制台已选择其他 MC 服务端" });
   if (!Array.isArray(screens) || screens.length > 200 || !Array.isArray(acks))
     return res.status(400).json({ error: "心跳格式无效" });
   const instance = String(req.body.instanceId || serverId || "legacy");
@@ -124,6 +127,8 @@ app.post("/api/bridge/poll", (req, res) => {
   if(Date.now()-lastBridgeSave>1000){save();lastBridgeSave=Date.now();}
   res.json({
     time: Date.now(),
+    // Positions only: lets a newly joined distant viewer load the controller chunk.
+    screenLocations: state.screens.slice(0,200).map(({dimension,x,y,z})=>({dimension,x,y,z})),
     playerClaims:issuePlayerClaims(req.body.players||[]),
     commands: state.commands.slice(0, 40),
     mediaHosts: [
@@ -238,6 +243,8 @@ app.post("/api/resources/upload", async (req, res, next) => {
 }, upload.single("file"), (req, res) => {
   if (!req.file) throw Error("请选择支持的视频、音频或图片文件");
   const mediaType=/\.(mp3|wav|flac|ogg|m4a|aac)$/i.test(req.file.originalname)?'audio':/\.(png|jpe?g|webp)$/i.test(req.file.originalname)?'image':'video';
+  const preserveHevc=mediaType==='video'&&req.body.preserveHevc==='true';
+  if(preserveHevc&&req.body.format!=='hls'){unlink(req.file.path).catch(()=>{});throw Error('保留 H.265 模式仅支持 HLS 分片');}
   const imageSeconds=Number(req.body.imageSeconds??15);
   if(mediaType==='image'&&(!Number.isInteger(imageSeconds)||imageSeconds<1||imageSeconds>3600)){unlink(req.file.path).catch(()=>{});throw Error('图片展示时长须为 1–3600 秒的整数');}
   const r = {
@@ -245,6 +252,7 @@ app.post("/api/resources/upload", async (req, res, next) => {
     name: String(req.body.name || req.file.originalname).slice(0, 120),
     kind: "vod",
     mediaType,imageSeconds:mediaType==='image'?imageSeconds:undefined,
+    preserveHevc,
     format: req.body.format === "hls" ? "hls" : "mp4",
     quality: Number(req.body.quality) === 1080 ? 1080 : 720,
     status: "processing",
@@ -354,7 +362,7 @@ app.post("/api/screens", (req, res) => {
     x: coords[0],
     y: coords[1],
     z: coords[2],
-    width: Math.max(4, Math.min(32, Number(b.width) || 12)),
+    width: Math.max(4, Math.min(100, Number(b.width) || 12)),
     facing: ["north", "south", "east", "west"].includes(b.facing)
       ? b.facing
       : "south",
@@ -371,7 +379,7 @@ const updateScreen = (req, res) => {
   if (!s) throw Error("屏幕不存在");
   if (req.body.name) s.name = String(req.body.name).slice(0, 80);
   const data = {
-    width: Math.max(4, Math.min(32, Number(req.body.width) || s.width)),
+    width: Math.max(4, Math.min(100, Number(req.body.width) || s.width)),
     facing: ["north", "south", "east", "west"].includes(req.body.facing)
       ? req.body.facing
       : s.facing,
@@ -381,6 +389,22 @@ const updateScreen = (req, res) => {
   queueCommand(s.id, "configure", data);
   res.json({ ok: true });
 };
+// Audio commands are independent of transport: no seek, restart, or cache invalidation.
+app.post("/api/screens/:id/audio", (req,res) => {
+  const s=state.screens.find(s=>s.id===req.params.id);
+  if(!s)throw Error("屏幕不存在");
+  if(!s.online||Date.now()-lastHeartbeat>=6000)throw Error("请先连接 MC 屏幕");
+  const b=req.body;
+  if(b.volume!==undefined&&(!Number.isInteger(b.volume)||b.volume<0||b.volume>100))throw Error("音量必须是 0–100 的整数");
+  if(b.suppressMusic!==undefined&&typeof b.suppressMusic!=="boolean")throw Error("背景音乐开关无效");
+  if(b.volume===undefined&&b.suppressMusic===undefined)throw Error("缺少音频设置");
+  const audio={volume:s.volume??s.policy?.volume??100,suppressMusic:s.suppressMusic??s.policy?.suppressMusic??true};
+  if(b.volume!==undefined)audio.volume=b.volume;
+  if(b.suppressMusic!==undefined)audio.suppressMusic=b.suppressMusic;
+  const command=queueCommand(s.id,"audio",audio);
+  s.policy=validatePolicy({...s.policy,...audio});save();
+  res.status(202).json({commandIds:[command.id]});
+});
 app.patch("/api/screens/:id",updateScreen);
 app.post("/api/screens/:id/update",updateScreen);
 const removeScreen = (req, res) => {
@@ -437,7 +461,16 @@ app.post("/api/control", (req, res) => {
   const targets = screenIds.map((id) =>
     state.screens.find((s) => s.id === id && s.online),
   );
-  if (targets.some((s) => !s)) throw Error("目标屏幕未加载或离线");
+  if (targets.some((s) => !s)) {
+    const missing = screenIds.filter(
+      (id) => !state.screens.find((s) => s.id === id && s.online),
+    );
+    throw Error(
+      missing.length === screenIds.length
+        ? "所选屏幕已不在服务器列表里，请刷新页面重新勾选"
+        : "目标屏幕未加载或离线：" + missing.join("、"),
+    );
+  }
   const commandIds=[];
   for (const s of targets) {
     if (action === "load" || action === "take") s.resourceId = resourceId;
@@ -497,20 +530,23 @@ app.get("/", (req, res) =>
     ),
   ),
 );
-app.use((e, req, res, next) =>
-  res.status(400).json({ error: e.message || "请求失败" }),
-);
+app.use((e, req, res, next) => {
+  if(res.headersSent)return next(e);
+  res.status(400).json({ error: e.message || "请求失败" });
+});
 export const listener = app.listen(port, host, () =>
   console.log("Cinema Console: http://" + host + ":" + port),
 );
 // Large uploads may take longer than Node's default five-minute request timeout.
 listener.requestTimeout = 0;
 export { app };
-process.on("SIGINT", () => {
+let shuttingDown=false;
+function shutdown(){
+  if(shuttingDown)return;shuttingDown=true;
   if (!agentBase) stopLive();
   listener.close(() => process.exit());
-});
-process.on("SIGTERM", () => {
-  if (!agentBase) stopLive();
-  listener.close(() => process.exit());
-});
+  listener.closeIdleConnections?.();
+  const deadline=setTimeout(()=>{listener.closeAllConnections?.();process.exit(0);},5000);deadline.unref();
+}
+process.on("SIGINT",shutdown);
+process.on("SIGTERM",shutdown);

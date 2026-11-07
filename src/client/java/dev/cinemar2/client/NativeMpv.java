@@ -3,6 +3,7 @@ package dev.cinemar2.client;
 import com.sun.jna.*;
 import com.sun.jna.ptr.PointerByReference;
 import java.util.Map;
+import java.nio.file.Path;
 
 /** Small binding to the stable libmpv client/render C APIs. */
 public interface NativeMpv extends Library {
@@ -24,5 +25,11 @@ public interface NativeMpv extends Library {
     long mpv_render_context_update(Pointer context);
     int mpv_render_context_render(Pointer context,Pointer params);
     void mpv_render_context_free(Pointer context);
-    static NativeMpv load(String path){return Native.load(path,NativeMpv.class,Map.of(Library.OPTION_STRING_ENCODING,"UTF-8"));}
+    static NativeMpv load(String path){
+        // Windows/JNA can reject an existing DLL when LoadLibrary receives a
+        // relative path with forward slashes. Keep bare system library names,
+        // but normalize explicit paths before passing them to the native loader.
+        if(path.contains("/")||path.contains("\\"))path=Path.of(path).toAbsolutePath().normalize().toString();
+        return Native.load(path,NativeMpv.class,Map.of(Library.OPTION_STRING_ENCODING,"UTF-8"));
+    }
 }

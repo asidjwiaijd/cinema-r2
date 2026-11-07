@@ -10,6 +10,21 @@ import java.util.concurrent.atomic.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MediaRelayTest {
+    String nativeDiagnostics(String url){
+        var logs=new StringBuilder();var api=NativeMpv.load(System.getProperty("cinema.mpv"));var handle=api.mpv_create();
+        try{
+            api.mpv_set_option_string(handle,"vo","null");api.mpv_set_option_string(handle,"ao","null");api.mpv_set_option_string(handle,"terminal","no");
+            com.sun.jna.NativeLibrary.getInstance(System.getProperty("cinema.mpv")).getFunction("mpv_request_log_messages").invokeInt(new Object[]{handle,"debug"});
+            api.mpv_initialize(handle);
+            try(var args=new com.sun.jna.StringArray(new String[]{"loadfile",url})){api.mpv_command(handle,args);}
+            long end=System.currentTimeMillis()+5000;
+            while(System.currentTimeMillis()<end){var event=api.mpv_wait_event(handle,.1);int id=event.getInt(0);
+                if(id==2){var data=event.getPointer(16);String text=data.getPointer(16).getString(0,"UTF-8");logs.append(text);}
+                if(id==7)break;
+            }
+        }catch(Exception e){logs.append(e);}finally{api.mpv_terminate_destroy(handle);}
+        return logs.toString();
+    }
     HttpServer primary,cdn,paid;
     ExecutorService executor;
     final Map<String,byte[]> files=new ConcurrentHashMap<>();
@@ -21,6 +36,7 @@ class MediaRelayTest {
     final AtomicInteger paidDeadlineSegment=new AtomicInteger();
     final AtomicBoolean eoMediaBroken=new AtomicBoolean(),eoPolicyBroken=new AtomicBoolean(),backupAllowed=new AtomicBoolean(true);
     final AtomicInteger startupSeconds=new AtomicInteger(60),emergencySeconds=new AtomicInteger(30);
+    final AtomicInteger prefetchSeconds=new AtomicInteger(600);
     final AtomicInteger primaryDelayMs=new AtomicInteger();
     ScheduledExecutorService feedback;
     final HttpClient client=HttpClient.newHttpClient();
@@ -39,7 +55,7 @@ class MediaRelayTest {
         try{
             if(e.getRequestURI().getPath().startsWith("/api/")){
                 if(origin==1&&eoPolicyBroken.get()){e.sendResponseHeaders(503,-1);return;}
-                e.getRequestBody().readAllBytes();byte[] json=(e.getRequestURI().getPath().endsWith("policy")?"{\"cdnEnabled\":"+allowed.get()+",\"backupEnabled\":"+backupAllowed.get()+",\"vodFallback\":true,\"sessionLimitMB\":0,\"vodStartupCdnSeconds\":"+startupSeconds.get()+",\"vodEmergencyCdnSeconds\":"+emergencySeconds.get()+",\"reportToken\":\"fixture\"}":"{\"ok\":true}").getBytes();e.sendResponseHeaders(200,json.length);e.getResponseBody().write(json);return;
+                e.getRequestBody().readAllBytes();byte[] json=(e.getRequestURI().getPath().endsWith("policy")?"{\"cdnEnabled\":"+allowed.get()+",\"backupEnabled\":"+backupAllowed.get()+",\"vodFallback\":true,\"sessionLimitMB\":0,\"vodStartupCdnSeconds\":"+startupSeconds.get()+",\"vodEmergencyCdnSeconds\":"+emergencySeconds.get()+",\"vodPrefetchSeconds\":"+prefetchSeconds.get()+",\"reportToken\":\"fixture\"}":"{\"ok\":true}").getBytes();e.sendResponseHeaders(200,json.length);e.getResponseBody().write(json);return;
             }
             if(origin==2)paidMedia.incrementAndGet();else if(fallback)cdnMedia.incrementAndGet();else r2Media.incrementAndGet();
             if(!fallback&&primaryDelayMs.get()>0)Thread.sleep(primaryDelayMs.get());
@@ -173,6 +189,37 @@ class MediaRelayTest {
         }
     }
     @Test @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="cinema.integration",matches="true")
+    void nativeFutureTailProbeAndBidirectionalSeeksKeepTheSameDecoderAndAudio()throws Exception{
+        var dir=java.nio.file.Files.createTempDirectory("cinema-future-probe-");
+        try{
+            var process=new ProcessBuilder("ffmpeg","-y","-hide_banner","-loglevel","error","-stream_loop","23","-i",java.nio.file.Path.of(".tools/test-pattern.mp4").toAbsolutePath().toString(),"-t","96","-vf","scale=320:180","-c:v","libx264","-preset","ultrafast","-threads","2","-pix_fmt","yuv420p","-r","24","-g","48","-sc_threshold","0","-c:a","aac","-ar","48000","-f","hls","-hls_time","2","-hls_playlist_type","vod","-hls_segment_filename",dir.resolve("segment_%03d.ts").toString(),dir.resolve("index.m3u8").toString()).redirectErrorStream(true).start();
+            String log=new String(process.getInputStream().readAllBytes());assertTrue(process.waitFor(30,TimeUnit.SECONDS));assertEquals(0,process.exitValue(),log);
+            try(var stream=java.nio.file.Files.list(dir)){for(var path:stream.toList())files.put(path.getFileName().toString(),java.nio.file.Files.readAllBytes(path));}
+            prefetchSeconds.set(60);allowed.set(false);
+            var settings=new ClientSettings();settings.mpvLibraryPath=System.getProperty("cinema.mpv");settings.cacheDirectory=dir.resolve("cache").toString();settings.cacheMemoryMB=64;
+            try(var relay=relay("index.m3u8")){
+                relay.enableParallelCache(settings,18);
+                try(var player=new MpvCore(settings,relay.url(),18000,true,0,false,12,true,720,600,1,relay)){
+                    long end=System.currentTimeMillis()+15000;
+                    while((!player.hasFrames()||player.stats().positionMs()<17500||player.stats().audioDevice().isEmpty())&&System.currentTimeMillis()<end)Thread.sleep(30);
+                    assertTrue(player.hasFrames(),player.error());assertEquals("",player.error());assertFalse(player.stats().audioDevice().isEmpty());
+                    var field=MpvCore.class.getDeclaredField("handle");field.setAccessible(true);Object handle=field.get(player);
+                    var response=client.sendAsync(HttpRequest.newBuilder(URI.create(relay.url()).resolve("segment_047.ts")).build(),HttpResponse.BodyHandlers.ofByteArray()).get(3,TimeUnit.SECONDS);
+                    assertEquals(200,response.statusCode());assertArrayEquals(files.get("segment_047.ts"),response.body());
+                    for(long target:new long[]{90000,18000}){
+                        player.transport(target,true,true);end=System.currentTimeMillis()+7000;
+                        while((Math.abs(player.stats().positionMs()-target)>1500||player.stats().buffering())&&System.currentTimeMillis()<end)Thread.sleep(30);
+                        assertTrue(Math.abs(player.stats().positionMs()-target)<=1500,player.stats().toString());
+                        assertEquals(handle,field.get(player));assertEquals("",player.error());assertFalse(player.stats().audioDevice().isEmpty());
+                    }
+                    long frames=player.stats().renderedFrames();Thread.sleep(600);assertTrue(player.stats().renderedFrames()>frames);
+                    assertEquals(0,cdnMedia.get());assertEquals(0,paidMedia.get());assertTrue(relay.prefetchPeakR2()<=6);
+                    System.out.println("Native outside-window tail probe: HTTP 200, R2 only, forward/back seeks retain decoder and audio");
+                }
+            }
+        }finally{try(var paths=java.nio.file.Files.walk(dir)){for(var p:paths.sorted(Comparator.reverseOrder()).toList())java.nio.file.Files.deleteIfExists(p);}}
+    }
+    @Test @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="cinema.integration",matches="true")
     void nativeParallelSpoolStartsMidMovieBothPlayingAndPaused()throws Exception{
         var dir=java.nio.file.Files.createTempDirectory("cinema-midmovie-native-");
         try{
@@ -186,7 +233,7 @@ class MediaRelayTest {
                     try(var player=new MpvCore(settings,relay.url(),18000,play,0,false,12,true,720,600,1,relay)){
                         long end=System.currentTimeMillis()+12000;
                         while((!player.hasFrames()||player.stats().positionMs()<17500||player.stats().audioDevice().isEmpty())&&System.currentTimeMillis()<end)Thread.sleep(30);
-                        assertEquals("",player.error());assertTrue(player.hasFrames(),"Mid-movie startup must decode its probe TS");assertTrue(player.stats().positionMs()>=17500);assertFalse(player.stats().audioDevice().isEmpty());
+                        assertEquals("",player.error(),relay.lastFailure());assertTrue(player.hasFrames(),"Mid-movie startup must decode its probe TS");assertTrue(player.stats().positionMs()>=17500);assertFalse(player.stats().audioDevice().isEmpty());
                         long before=player.stats().renderedFrames(),pos=player.stats().positionMs();Thread.sleep(1000);
                         if(play){assertTrue(player.stats().renderedFrames()>before+10);assertTrue(player.stats().positionMs()>pos+500);}else assertTrue(Math.abs(player.stats().positionMs()-pos)<100);
                         System.out.println("Native mid-movie start: playing="+play+", position="+player.stats().positionMs()+", frames/audio available");
@@ -210,7 +257,7 @@ class MediaRelayTest {
                     long end=System.currentTimeMillis()+25000,previous=0,last=System.currentTimeMillis(),gap=0;boolean started=false;
                     var field=MpvCore.class.getDeclaredField("handle");field.setAccessible(true);Object handle=null;
                     while(System.currentTimeMillis()<end&&(player.stats().positionMs()<12000||paidDeadlineSegment.get()==0)){
-                        var s=player.stats();assertEquals("",player.error());long now=System.currentTimeMillis();
+                        var s=player.stats();if(!player.error().isEmpty())fail(player.error()+"; relay="+relay.lastFailure()+"; native="+nativeDiagnostics(relay.url()));long now=System.currentTimeMillis();
                         if(player.hasFrames()&&!s.audioDevice().isEmpty()){
                             if(!started){started=true;last=now;handle=field.get(player);}
                             if(s.positionMs()!=previous){gap=Math.max(gap,now-last);previous=s.positionMs();last=now;}
@@ -228,7 +275,7 @@ class MediaRelayTest {
     }
     @Test @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="cinema.integration",matches="true")
     void nativeCacheDeadlineWaitsForR2AndOnlyThenUsesPaidBackup()throws Exception{
-        var dir=java.nio.file.Files.createTempDirectory("cinema-cache-deadline-");
+        var dir=java.nio.file.Files.createTempDirectory(java.nio.file.Path.of(".tools").toAbsolutePath(),"cinema-cache-deadline-");
         try{
             var process=new ProcessBuilder("ffmpeg","-y","-hide_banner","-loglevel","error","-stream_loop","11","-i",java.nio.file.Path.of(".tools/test-pattern.mp4").toAbsolutePath().toString(),"-t","48","-c:v","libx264","-preset","ultrafast","-threads","2","-pix_fmt","yuv420p","-r","24","-g","48","-sc_threshold","0","-c:a","aac","-ar","48000","-f","hls","-hls_time","2","-hls_playlist_type","vod","-hls_segment_filename",dir.resolve("segment_%03d.ts").toString(),dir.resolve("index.m3u8").toString()).redirectErrorStream(true).start();
             String log=new String(process.getInputStream().readAllBytes());assertTrue(process.waitFor(30,TimeUnit.SECONDS));assertEquals(0,process.exitValue(),log);
@@ -269,7 +316,7 @@ class MediaRelayTest {
     }
     @Test @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="cinema.integration",matches="true")
     void nativeDecoderKeepsAudioAndCacheAcrossSegmentFailure()throws Exception{
-        var dir=java.nio.file.Files.createTempDirectory("cinema-failover-");
+        var dir=java.nio.file.Files.createTempDirectory(java.nio.file.Path.of(".tools").toAbsolutePath(),"cinema-failover-");
         try{
             var process=new ProcessBuilder("ffmpeg","-y","-hide_banner","-loglevel","error","-stream_loop","7","-i",java.nio.file.Path.of(".tools/test-pattern.mp4").toAbsolutePath().toString(),"-t","32","-c:v","libx264","-preset","ultrafast","-threads","2","-pix_fmt","yuv420p","-r","24","-g","24","-sc_threshold","0","-c:a","aac","-ar","48000","-f","hls","-hls_time","1","-hls_playlist_type","vod","-hls_segment_filename",dir.resolve("segment_%03d.ts").toString(),dir.resolve("index.m3u8").toString()).redirectErrorStream(true).start();
             String log=new String(process.getInputStream().readAllBytes());assertTrue(process.waitFor(30,TimeUnit.SECONDS));assertEquals(0,process.exitValue(),log);

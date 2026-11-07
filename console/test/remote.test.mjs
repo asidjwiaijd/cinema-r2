@@ -54,11 +54,23 @@ test('player operations require login; server-issued identity separates route us
  assert.equal((await call('/api/players/'+uuid+'/action',{action:'admin-grant'})).status,401);
  const grant=await(await call('/api/players/'+uuid+'/action',{action:'admin-grant'},admin)).json();
  const grants=await(await call('/api/bridge/poll',{players:[player],bans:[],screens:[],acks:[]},bridge)).json();const g=grants.commands.find(c=>c.id===grant.commandIds[0]);assert.equal(g.action,'player:admin-grant');assert.equal(g.connectionId,'connection-a');assert.ok(g.expiresAt>Date.now());
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'op-set',level:2,confirm:true})).status,401);
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'op-set',level:2,confirm:true},admin)).status,400,'old bridges cannot manage OP');
+ await call('/api/bridge/poll',{players:[{...player,opLevel:2}],operators:[{uuid,level:2}],opManagement:true,bans:[],screens:[],acks:[]},bridge);
+ assert.equal((await(await call('/api/players',undefined,admin)).json()).players[0].opLevel,2);
+ for(const level of [-1,5,1.5,'2',null])assert.equal((await call('/api/players/'+uuid+'/action',{action:'op-set',level,confirm:true},admin)).status,400);
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'op-set',level:2},admin)).status,400);
+ const op=await(await call('/api/players/'+uuid+'/action',{action:'op-set',level:2,confirm:true},admin)).json();
+ const opPoll=await(await call('/api/bridge/poll',{players:[player],operators:[],opManagement:true,bans:[],screens:[],acks:[]},bridge)).json();
+ const opCommand=opPoll.commands.find(c=>c.id===op.commandIds[0]);assert.equal(opCommand.action,'player:op-set');assert.equal(opCommand.level,2);assert.equal(opCommand.connectionId,'connection-a');
  assert.equal((await call('/api/arena/build',{confirm:true})).status,401);assert.equal((await call('/api/arena/build',{confirm:false},admin)).status,400);
  const queued=await(await call('/api/players/'+uuid+'/action',{action:'kick',reason:'test'},admin)).json();
  const next=await(await call('/api/bridge/poll',{players:[player],bans:[],screens:[],acks:[]},bridge)).json();const command=next.commands.find(c=>c.id===queued.commandIds[0]);assert.equal(command.action,'player:kick');assert.equal(command.playerUuid,uuid);
  assert.equal((await call('/api/bridge/poll',{players:[],bans:[],screens:[],acks:[{id:command.id}]},bridge)).status,200);
  assert.equal((await call('/api/players/'+uuid+'/action',{action:'kick'},admin)).status,400);
+ await call('/api/bridge/poll',{players:[],operators:[{uuid,level:2}],opManagement:true,bans:[],screens:[],acks:[]},bridge);
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'op-set',level:2,confirm:true},admin)).status,400,'offline grants rejected');
+ assert.equal((await call('/api/players/'+uuid+'/action',{action:'op-set',level:0,confirm:true},admin)).status,202,'offline OP can be revoked');
  const history=await(await call('/api/players',undefined,admin)).json();assert.equal(history.players[0].online,false);assert.equal(history.players[0].joins,1);
 });
 after(async()=>{

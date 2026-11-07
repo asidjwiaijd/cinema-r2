@@ -76,6 +76,6 @@ export function syncAll(){
 export function scheduleSync(){
   if(!settings.r2.accessKeyId)return;
   const attempt=()=>{if(!jobs.some(j=>j.status==="running"))syncAll();};
-  const first=setTimeout(attempt,3000);first.unref();
+  if(process.env.CINEMA_SKIP_INITIAL_SYNC!=="1"){const first=setTimeout(attempt,3000);first.unref();}
   const timer=setInterval(()=>{if(!state.resources.some(r=>r.status==="processing"))attempt();},3600000);timer.unref();
 }

@@ -16,14 +16,16 @@ class BufferedPlaybackTest {
     private static HttpServer server;
     private static ExecutorService executor;
     private static final AtomicBoolean delayed=new AtomicBoolean();
+    private static final AtomicBoolean delayManifest=new AtomicBoolean();
     @BeforeAll static void start()throws Exception{
-        dir=Files.createTempDirectory("cinema-buffer-");
+        dir=Files.createTempDirectory(Path.of(".tools").toAbsolutePath(),"cinema-buffer-");
         var process=new ProcessBuilder("ffmpeg","-y","-hide_banner","-loglevel","error","-stream_loop","11","-i",Path.of(".tools/test-pattern.mp4").toAbsolutePath().toString(),"-t","48","-c:v","libx264","-preset","ultrafast","-threads","2","-pix_fmt","yuv420p","-r","24","-g","24","-sc_threshold","0","-c:a","aac","-ar","48000","-f","hls","-hls_time","1","-hls_playlist_type","vod","-hls_segment_filename",dir.resolve("segment_%03d.ts").toString(),dir.resolve("index.m3u8").toString()).redirectErrorStream(true).start();
         String log=new String(process.getInputStream().readAllBytes());assertTrue(process.waitFor(30,TimeUnit.SECONDS));assertEquals(0,process.exitValue(),log);
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);executor=Executors.newCachedThreadPool();server.setExecutor(executor);
         server.createContext("/",exchange->{
             try{
                 String name=Path.of(exchange.getRequestURI().getPath()).getFileName().toString();
+                if(name.equals("index.m3u8")&&delayManifest.compareAndSet(true,false))Thread.sleep(800);
                 if(name.equals("segment_008.ts")&&delayed.compareAndSet(false,true))Thread.sleep(4000);
                 byte[] data=Files.readAllBytes(dir.resolve(name));exchange.sendResponseHeaders(200,data.length);
                 try(var out=exchange.getResponseBody()){out.write(data);}
@@ -32,11 +34,20 @@ class BufferedPlaybackTest {
     }
     @AfterAll static void stop()throws Exception{
         if(server!=null)server.stop(0);if(executor!=null)executor.shutdownNow();
-        if(dir!=null&&dir.toAbsolutePath().normalize().getParent().equals(Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize())&&dir.getFileName().toString().startsWith("cinema-buffer-")){
+        if(dir!=null&&dir.toAbsolutePath().normalize().getParent().equals(Path.of(".tools").toAbsolutePath().normalize())&&dir.getFileName().toString().startsWith("cinema-buffer-")){
             try(var files=Files.walk(dir)){for(var f:files.sorted(java.util.Comparator.reverseOrder()).toList())Files.deleteIfExists(f);}
         }
     }
     private ClientSettings settings(){var s=new ClientSettings();s.mpvLibraryPath=System.getProperty("cinema.mpv");s.cacheDirectory=dir.resolve("cache").toString();return s;}
+    @Test void seekDuringInitialManifestLoadWaitsForDecoderReadiness()throws Exception{
+        delayManifest.set(true);
+        try(var p=new MpvCore(settings(),"http://127.0.0.1:"+server.getAddress().getPort()+"/index.m3u8",0,true,0,false,12,true,720,600,1)){
+            p.transport(15000,true,true);
+            long end=System.currentTimeMillis()+15000;
+            while((!p.hasFrames()||p.stats().positionMs()<14900||p.stats().audioDevice().isEmpty())&&p.error().isEmpty()&&System.currentTimeMillis()<end)Thread.sleep(30);
+            assertEquals("",p.error());assertTrue(p.hasFrames());assertTrue(p.stats().positionMs()>=14900);assertFalse(p.stats().audioDevice().isEmpty());
+        }
+    }
     @Test void cachedPauseResumeAndSeekKeepTheSameDecoderAndRespondQuickly()throws Exception{
         try(var p=new MpvCore(settings(),"http://127.0.0.1:"+server.getAddress().getPort()+"/index.m3u8",0,true,0,false,12,true,720,1200,20)){
             long deadline=System.currentTimeMillis()+25000;

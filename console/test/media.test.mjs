@@ -1,12 +1,25 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, open, rm } from "node:fs/promises";
+import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import {createHash} from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
 const dir = await mkdtemp(join(tmpdir(), "cinema-media-"));
 process.env.CINEMA_DATA = dir;
 const { putFile } = await import("../server/media.mjs");
 const { settings } = await import("../server/model.mjs");
+test('resume confirms matching R2 content without uploading it again',async()=>{
+ const file=join(dir,'existing.ts'),data=Buffer.from('already uploaded');await writeFile(file,data);
+ const calls=[],progress=[];const client={async send(command){calls.push(command.constructor.name);assert.equal(command.constructor.name,'HeadObjectCommand');return {ContentLength:data.length,Metadata:{sha256:createHash('sha256').update(data).digest('hex')}};}};
+ await putFile(client,file,'media/test/existing.ts',undefined,{skipExisting:true,onProgress:n=>progress.push(n)});
+ assert.deepEqual(calls,['HeadObjectCommand']);assert.deepEqual(progress,[data.length]);
+});
+test('resume refuses a conflicting R2 object and uploads a genuinely missing one',async()=>{
+ const file=join(dir,'resume.ts'),data=Buffer.from('complete');await writeFile(file,data);
+ await assert.rejects(putFile({async send(){return {ContentLength:data.length,Metadata:{sha256:'different'}};}},file,'media/test/resume.ts',undefined,{skipExisting:true}),e=>e.code==='R2_OBJECT_CONFLICT');
+ const calls=[];await putFile({async send(command){calls.push(command.constructor.name);if(command.constructor.name==='HeadObjectCommand')throw Object.assign(Error('missing'),{$metadata:{httpStatusCode:404}});let bytes=0;for await(const chunk of command.input.Body)bytes+=chunk.length;assert.equal(bytes,data.length);return {};}},file,'media/test/resume.ts',undefined,{skipExisting:true});
+ assert.deepEqual(calls,['HeadObjectCommand','PutObjectCommand']);
+});
 after(async () => {
   assert.equal(dirname(dir), tmpdir());
   assert.ok(basename(dir).startsWith("cinema-media-"));
@@ -40,7 +53,10 @@ test("multipart streams exact bounded parts and completes the upload", async () 
       return {};
     },
   };
-  await putFile(client, file, "media/test/original.mp4");
+  const progress=[];
+  await putFile(client, file, "media/test/original.mp4",undefined,{onProgress:(done,total)=>progress.push({done,total})});
+  assert.deepEqual(progress.map(p=>p.done),[64*1024*1024,65*1024*1024+9]);
+  assert.ok(progress.every(p=>p.total===65*1024*1024+9));
   assert.deepEqual(calls, [
     "CreateMultipartUploadCommand",
     "UploadPartCommand",

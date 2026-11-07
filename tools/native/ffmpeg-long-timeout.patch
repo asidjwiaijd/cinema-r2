@@ -1,0 +1,22 @@
+--- a/libavformat/tcp.c
++++ b/libavformat/tcp.c
+@@ -39,8 +39,8 @@
+     int listen;
+     char *local_port;
+     char *local_addr;
+-    int open_timeout;
+-    int rw_timeout;
++    int64_t open_timeout;
++    int64_t rw_timeout;
+     int listen_timeout;
+     int recv_buffer_size;
+     int send_buffer_size;
+@@ -58,7 +58,7 @@
+     { "listen",          "Listen for incoming connections",  OFFSET(listen),         AV_OPT_TYPE_INT, { .i64 = 0 },     0,       2,       .flags = D|E },
+     { "local_port",      "Local port",                                         OFFSET(local_port),     AV_OPT_TYPE_STRING, { .str = NULL },     0,       0, .flags = D|E },
+     { "local_addr",      "Local address",                                      OFFSET(local_addr),     AV_OPT_TYPE_STRING, { .str = NULL },     0,       0, .flags = D|E },
+-    { "timeout",     "set timeout (in microseconds) of socket I/O operations", OFFSET(rw_timeout),     AV_OPT_TYPE_INT, { .i64 = -1 },         -1, INT_MAX, .flags = D|E },
++    { "timeout",     "set timeout (in microseconds) of socket I/O operations", OFFSET(rw_timeout),     AV_OPT_TYPE_INT64, { .i64 = -1 },         -1, INT64_MAX, .flags = D|E },
+     { "listen_timeout",  "Connection awaiting timeout (in milliseconds)",      OFFSET(listen_timeout), AV_OPT_TYPE_INT, { .i64 = -1 },         -1, INT_MAX, .flags = D|E },
+     { "send_buffer_size", "Socket send buffer size (in bytes)",                OFFSET(send_buffer_size), AV_OPT_TYPE_INT, { .i64 = -1 },         -1, INT_MAX, .flags = D|E },
+     { "recv_buffer_size", "Socket receive buffer size (in bytes)",             OFFSET(recv_buffer_size), AV_OPT_TYPE_INT, { .i64 = -1 },         -1, INT_MAX, .flags = D|E },

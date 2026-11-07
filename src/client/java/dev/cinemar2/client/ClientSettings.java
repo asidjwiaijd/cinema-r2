@@ -7,6 +7,7 @@ import java.nio.file.Files;
 public final class ClientSettings {
     public String ffmpegPath = "ffmpeg";
     public float volume = 0.7f;
+    public float audioBoost = 1.5f;
     public int bufferSeconds = 3; // Legacy setting; libmpv uses compressed cache options below.
     public String mpvLibraryPath = "libmpv-2";
     public int cacheMemoryMB = 512;
@@ -29,6 +30,7 @@ public final class ClientSettings {
             var config = gson.fromJson(Files.readString(file), ClientSettings.class);
             if (config == null || config.ffmpegPath == null || config.ffmpegPath.isBlank()) throw new IllegalArgumentException("Missing FFmpeg path");
             config.volume = Math.max(0, Math.min(1, config.volume));
+            config.audioBoost = Float.isFinite(config.audioBoost) ? Math.clamp(config.audioBoost, 1, 3) : 1.5f;
             config.bufferSeconds = Math.max(1, Math.min(5, config.bufferSeconds));
             config.cacheMemoryMB=Math.max(64,Math.min(4096,config.cacheMemoryMB));
             config.cacheDiskGB=Math.max(1,Math.min(64,config.cacheDiskGB));

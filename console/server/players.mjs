@@ -16,11 +16,16 @@ export function ingestPlayers(body){
   if(!old.online||old.connectionId!==p.connectionId)old.joins++;
   records[p.uuid]={...old,name:p.name,online:true,connectionId:String(p.connectionId||''),lastSeen:now,ping:Math.max(0,Math.min(60000,Number(p.ping)||0)),dimension:String(p.dimension||'').slice(0,80),x:Math.round(Number(p.x)||0),y:Math.round(Number(p.y)||0),z:Math.round(Number(p.z)||0),gameMode:String(p.gameMode||'').slice(0,30),joinedAt:Number(p.joinedAt)||now};
   records[p.uuid].cinemaAdmin=!!p.cinemaAdmin;records[p.uuid].adminActive=!!p.adminActive;
+  records[p.uuid].opLevel=Number.isInteger(p.opLevel)&&p.opLevel>=0&&p.opLevel<=4?p.opLevel:null;
  }
  for(const p of Object.values(records))if(!seen.has(p.uuid))p.online=false;
  if(Array.isArray(body.cinemaAdmins))for(const p of Object.values(records))p.cinemaAdmin=body.cinemaAdmins.includes(p.uuid);
  bans=body.bans.filter(b=>validUuid(b.uuid)).map(b=>({uuid:b.uuid,name:String(b.name||'').slice(0,32),reason:String(b.reason||'').slice(0,200)}));
- server={maxPlayers:Number(body.maxPlayers)||0,online:seen.size,arena:body.arena};
+ if(Array.isArray(body.operators)){
+  const operators=new Map(body.operators.filter(p=>validUuid(p.uuid)&&Number.isInteger(p.level)&&p.level>=1&&p.level<=4).map(p=>[p.uuid,p.level]));
+  for(const p of Object.values(records))p.opLevel=operators.get(p.uuid)||0;
+ }
+ server={maxPlayers:Number(body.maxPlayers)||0,online:seen.size,arena:body.arena,opManagement:body.opManagement===true};
  const sorted=Object.values(records).sort((a,b)=>b.lastSeen-a.lastSeen);
  for(const p of sorted.slice(2000))delete records[p.uuid];
  if(now-lastSave>5000){writeFileSync(file+'.tmp',JSON.stringify(records));renameSync(file+'.tmp',file);lastSave=now;}
@@ -39,19 +44,26 @@ export function installPlayers(app,getScreens){
  app.post('/api/players/:uuid/action',(req,res)=>{
   if(Date.now()-lastHeartbeat>=6000)throw Error('MC 服务端未连接');
   const uuid=req.params.uuid;if(!validUuid(uuid))throw Error('玩家 UUID 无效');
-  const action=req.body.action;if(!['kick','ban','unban','teleport','admin-grant','admin-revoke'].includes(action))throw Error('玩家操作无效');
+  const action=req.body.action;if(!['kick','ban','unban','teleport','admin-grant','admin-revoke','op-set'].includes(action))throw Error('玩家操作无效');
   const player=records[uuid],ban=bans.find(b=>b.uuid===uuid);
   if(!player&&!ban)throw Error('玩家不存在');
   if(['kick','teleport','admin-grant'].includes(action)&&!player?.online)throw Error('玩家已经离线');
   const data={playerUuid:uuid,playerName:player?.name||ban.name,reason:String(req.body.reason||'影院管理员操作').slice(0,200),expiresAt:Date.now()+30000};
   if(action==='admin-grant')data.connectionId=player.connectionId;
+  if(action==='op-set'){
+   if(!server.opManagement)throw Error('当前 MC 服务端不支持网页 OP 管理，请先升级模组');
+   if(req.body.confirm!==true)throw Error('请确认修改玩家 OP 权限');
+   if(!Number.isInteger(req.body.level)||req.body.level<0||req.body.level>4)throw Error('OP 等级必须为 0–4 的整数');
+   if(req.body.level>0&&!player?.online)throw Error('授予 OP 时玩家必须在线');
+   data.level=req.body.level;data.connectionId=player?.online?player.connectionId:'';
+  }
   if(action==='teleport'){
    const screen=getScreens().find(s=>s.id===req.body.screenId&&s.online);
    if(!screen)throw Error('请选择在线影院屏幕');
    Object.assign(data,{dimension:screen.dimension,x:screen.x,y:screen.y,z:screen.z,screenId:screen.id});
   }
   const command=queueCommand('', 'player:'+action,data);
-  event('玩家操作已排队：'+data.playerName+' · '+action);
+  event('玩家操作已排队：'+data.playerName+' · '+action+(action==='op-set'?' · 等级 '+data.level:''));
   res.status(202).json({commandIds:[command.id]});
  });
 }

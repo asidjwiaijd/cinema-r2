@@ -79,7 +79,7 @@ public final class MpvCore implements AutoCloseable {
         }finally{api.mpv_free_node_contents(node);}
     }}
     private void command(String... args){Memory[] strings=new Memory[args.length];try(var pointers=new Memory((args.length+1L)*Native.POINTER_SIZE)){
-        pointers.clear();for(int i=0;i<args.length;i++){strings[i]=string(args[i]);pointers.setPointer((long)i*Native.POINTER_SIZE,strings[i]);}check(api.mpv_command(handle,pointers));
+        pointers.clear();for(int i=0;i<args.length;i++){strings[i]=string(args[i]);pointers.setPointer((long)i*Native.POINTER_SIZE,strings[i]);}int code=api.mpv_command(handle,pointers);if(code<0)throw new IllegalStateException(args[0]+": "+api.mpv_error_string(code));
     }finally{for(var s:strings)if(s!=null)s.close();}}
     private void run(){
         try{
@@ -110,24 +110,29 @@ public final class MpvCore implements AutoCloseable {
             try(var size=new Memory(8);var format=string("rgb0");var stride=new Memory(Native.SIZE_T_SIZE);var timing=new Memory(4)){
                 size.setInt(0,width);size.setInt(4,height);stride.setLong(0,width*4L);timing.setInt(0,0);
                 try(var draw=params(new int[]{17,18,19,20,12},new Pointer[]{size,format,stride,pixels,timing})){
-                    command("loadfile",relay==null?url:relay.url(),"replace");long nextStats=0;float lastVolume=volume;boolean diskLimited=false,initialBuffered=false;
+                    command("loadfile",relay==null?url:relay.url(),"replace");long nextStats=0;float lastVolume=volume;boolean diskLimited=false,initialBuffered=false,fileLoaded=false,seekRequested=false;
                     while(!closed){
                         for(int i=0;i<30;i++){var event=api.mpv_wait_event(handle,0);int id=event.getInt(0);if(id==0)break;
                             if(id==7){var detail=event.getPointer(16);if(detail!=null&&detail.getInt(4)<0)error="libmpv: "+api.mpv_error_string(detail.getInt(4));}
+                            if(id==8)fileLoaded=true; // MPV_EVENT_FILE_LOADED
                         }
                         if(frozen){property("pause","yes");property("mute","yes");break;}
                         Transport control;
                         while((control=controls.poll())!=null){
                             playing=control.playing();target=control.position();property("pause",playing?"no":"yes");
                             property("speed","1.0");
-                            if(!live&&control.seek()){
+                            if(!live&&control.seek())seekRequested=true;
+                        }
+                        // Timeline edits can arrive while the manifest or first segment is
+                        // still loading. Keep only the latest target until seeking is valid.
+                        if(seekRequested&&fileLoaded){
                                 // Keep this demuxer and its disk cache. Cached seeks do not wait
                                 // for the first-load prebuffer threshold again.
                                 property("cache-pause-initial","no");
                                 if(relay!=null)relay.prepareSeek(target/1000.0);
                                 command("seek",String.format(Locale.ROOT,"%.3f",target/1000.0),"absolute+exact");
                                 lastSync=System.currentTimeMillis();
-                            }
+                                seekRequested=false;
                         }
                         if(lastVolume!=volume){property("volume",Float.toString(volume*100));lastVolume=volume;}
                         if(update.getAndSet(false)&&(api.mpv_render_context_update(render)&1)!=0){

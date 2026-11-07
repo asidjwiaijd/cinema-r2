@@ -90,6 +90,8 @@ export function validatePolicy(p) {
     : "hold";
   return {
     onEnd: behavior,
+    volume: Number.isFinite(Number(p.volume)) && p.volume != null ? Math.round(Math.max(0, Math.min(100, Number(p.volume)))) : 100,
+    suppressMusic: p.suppressMusic !== false,
     quality: Number(p.quality) === 1080 ? 1080 : 720,
     cacheSeconds: Math.max(30, Math.min(3600, Number(p.cacheSeconds) || 1200)),
     cacheStartSeconds: Math.max(1, Math.min(120, Number(p.cacheStartSeconds) || 20)),

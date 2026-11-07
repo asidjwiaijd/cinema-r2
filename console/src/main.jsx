@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
+import {version as consoleVersion} from "../package.json";
 
 import {
   Clapperboard,
@@ -37,6 +38,7 @@ import {
 } from "lucide-react";
 import "./style.css";
 import {Players,Traffic} from "./Operations.jsx";
+import {uploadResult} from "./upload-result.mjs";
 const nav = [
   ["control", "播控台", Clapperboard],
   ["resources", "资源库", FolderOpen],
@@ -78,6 +80,23 @@ async function api(path, body, method = "POST") {
 }
 function Badge({ children, tone = "" }) {
   return <span className={"badge " + tone}>{children}</span>;
+}
+function AudioControls({screen,disabled,count,onApply}) {
+  const actualVolume=screen?.volume??screen?.policy?.volume??100;
+  const actualMusic=screen?.suppressMusic??screen?.policy?.suppressMusic??true;
+  const [volume,setVolume]=useState(actualVolume),[suppressMusic,setSuppressMusic]=useState(actualMusic);
+  useEffect(()=>{setVolume(actualVolume);setSuppressMusic(actualMusic);},[screen?.id,actualVolume,actualMusic]);
+  return <form className="audio-controls" onSubmit={e=>{e.preventDefault();onApply({volume,suppressMusic});}}>
+    <div className="audio-level"><Volume2 size={16}/><label htmlFor="screen-volume">游戏播放音量</label>
+      <input id="screen-volume" type="range" min="0" max="100" step="1" value={volume} disabled={disabled} onChange={e=>setVolume(Number(e.target.value))}/>
+      <output htmlFor="screen-volume">{volume===0?"静音":`${volume}%`}</output>
+      <button type="button" disabled={disabled} onClick={()=>{setVolume(0);onApply({volume:0});}}>静音</button>
+    </div>
+    <div className="audio-options"><label className="check-field"><input type="checkbox" checked={suppressMusic} disabled={disabled} onChange={e=>setSuppressMusic(e.target.checked)}/>观影时关闭游戏背景音乐</label>
+      <button disabled={disabled} type="submit">应用至 {count} 块屏幕</button>
+    </div>
+    <small>当前参考：{screen?.name||"未选择屏幕"} · 保留玩家音量与距离衰减 · 离开观影范围后恢复背景音乐</small>
+  </form>;
 }
 function Empty({ icon: Icon = FolderOpen, title, detail, action }) {
   return (
@@ -217,6 +236,14 @@ function App() {
       setScreenIds([data.screens.find((s) => s.online).id]);
   }, [data, touched]);
   useEffect(() => {
+    if (!data) return;
+    const next = screenIds.filter((id) => data.screens.some((s) => s.id === id));
+    if (next.length !== screenIds.length) {
+      setScreenIds(next);
+      setTouched(false);
+    }
+  }, [data, screenIds]);
+  useEffect(() => {
     if (notice) {
       const t = setTimeout(() => setNotice(null), 5000);
       return () => clearTimeout(t);
@@ -272,8 +299,7 @@ function App() {
   const actualPosition = reference ? (reference.positionMs + (playing && !reference.buffering ? Math.max(0,Date.now()-reference.receivedAt) : 0))/1000 : null;
   const drift = actualPosition === null ? null : position-actualPosition;
   const transportDisabled = busy || !data.bridge.online || !screenIds.length || !screen?.online || !screen?.url;
-  const sendControl = async (action,extra={}) => {
-    const {commandIds=[]}=await api("/control",{screenIds,action,...extra});
+  const waitCommands = async (commandIds=[]) => {
     const deadline=Date.now()+8000;
     while(commandIds.length&&Date.now()<deadline){
       const state=await api("/state",undefined,"GET");
@@ -288,6 +314,16 @@ function App() {
     }
     if(commandIds.length)throw Error("等待 MC 回执超时，请检查屏幕连接状态；不要重复点击");
   };
+  const sendControl = async (action,extra={}) => {
+    const {commandIds=[]}=await api("/control",{screenIds,action,...extra});
+    await waitCommands(commandIds);
+  };
+  const applyAudio=values=>act(async()=>{
+    const results=await Promise.allSettled(screenIds.map(id=>api("/screens/"+encodeURIComponent(id)+"/audio",values)));
+    await waitCommands(results.filter(r=>r.status==="fulfilled").flatMap(r=>r.value.commandIds));
+    const errors=results.filter(r=>r.status==="rejected");
+    if(errors.length)throw Error(errors.map(r=>r.reason.message).join("；"));
+  },"MC 已应用音频设置；无需重新缓冲（客户端需 0.4.1 或更新版）");
   const control=(action,extra={})=>act(()=>sendControl(action,extra),"MC 已执行指令；游戏端状态见下方回报");
   const startSelected=()=>control("take",{resourceId:staged?.id});
   const toggleScreen = (id) => {
@@ -296,17 +332,19 @@ function App() {
       ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
     );
   };
-  const uploadFiles = async (files, format = "hls", quality = 1080, imageSeconds = 15) => {
+  const uploadFiles = async (files, format = "hls", quality = 1080, imageSeconds = 15, preserveHevc = false) => {
     if (uploading) {
       setNotice({ error: true, text: "已有上传任务，请等待完成" });
       return;
     }
     for (const file of files) {
       const form = new FormData();
+      form.append("name", file.name);
       form.append("file", file);
       form.append("format", format);
       form.append("quality", quality);
       form.append("imageSeconds",imageSeconds);
+      form.append("preserveHevc",String(preserveHevc));
       setUploading({ name: file.name, progress: 0 });
       try {
         await new Promise((resolve, reject) => {
@@ -321,15 +359,14 @@ function App() {
           };
           xhr.onload = () => {
             try {
-              const result = JSON.parse(xhr.responseText);
-              xhr.status < 300
-                ? resolve(result)
-                : reject(Error(result.error || "上传失败"));
-            } catch {
-              reject(Error("上传响应无效"));
+              resolve(uploadResult(xhr.status,xhr.responseText));
+            } catch (error) {
+              reject(error);
             }
           };
           xhr.onerror = () => reject(Error("上传连接中断，请重新上传"));
+          xhr.onabort = () => reject(Error("上传已取消，文件尚未确认入库"));
+          xhr.ontimeout = () => reject(Error("上传连接超时，请检查资源库后重试"));
           xhr.send(form);
         });
         setNotice({ text: "上传完成，正在处理资源" });
@@ -369,6 +406,8 @@ function App() {
                 quality: Number(values.quality),
                 cacheSeconds: Number(values.cacheSeconds),
                 cacheStartSeconds: Number(values.cacheStartSeconds),
+                volume: Number(values.volume),
+                suppressMusic: values.suppressMusic === "on",
               },
             },
             "PATCH",
@@ -560,7 +599,7 @@ function App() {
               <Monitor size={14} />
               {data.screens.filter((s) => s.online).length} 屏幕在线
             </span>
-            <span className="version">v0.3.0</span>
+            <span className="version">v{consoleVersion}</span>
             {data.authEnabled && <button onClick={async()=>{await api("/auth/logout",{});setData(null);setAuthRequired(true);}}>退出登录</button>}
           </div>
         </header>
@@ -613,8 +652,8 @@ function App() {
                     <small>下一条素材 · 点击资源仅选择</small>
                     <strong title={staged?.name}>{staged?.name || "请先选择素材"}</strong>
                     <button disabled={!staged?.url} onClick={()=>setModal({type:"preview",id:staged.id})}><Eye size={14}/>独立预览素材</button>
-                    <button disabled={!staged || staged.status!=="ready" || busy || !screenIds.length || !data.bridge.online} onClick={()=>control("load",{resourceId:staged.id})}>载入待播（暂停）</button>
-                    <button className="primary" disabled={!staged || staged.status!=="ready" || busy || !screenIds.length || !data.bridge.online} onClick={startSelected}><Play size={14}/>立即播放到 {screenIds.length} 块屏幕</button>
+                    <button disabled={!staged || staged.status!=="ready" || busy || !screenIds.length || !data.bridge.online || !screen?.online} onClick={()=>control("load",{resourceId:staged.id})}>载入待播（暂停）</button>
+                    <button className="primary" disabled={!staged || staged.status!=="ready" || busy || !screenIds.length || !data.bridge.online || !screen?.online} onClick={startSelected}><Play size={14}/>立即播放到 {screenIds.length} 块屏幕</button>
                   </div>
                   <button
                     className="library-import"
@@ -726,6 +765,7 @@ function App() {
                     </div>
                     <span className="command-status">{busy ? "正在等待 MC 执行回执…" : "控制当前节目"}</span>
                   </div>
+                  <AudioControls screen={screen} disabled={busy||!data.bridge.online||!screenIds.length||!screen?.online} count={screenIds.length} onApply={applyAudio}/>
                   <div className="signal-bar">
                     <span>
                       <ShieldCheck size={13} />
@@ -828,7 +868,7 @@ function App() {
                       <Plus size={14} />
                       加入选中资源
                     </button>
-                    <button disabled={busy || !screenIds.length || !data.bridge.online} onClick={() => control("playlist", { queue })}>
+                    <button disabled={busy || !screenIds.length || !data.bridge.online || !screen?.online} onClick={() => control("playlist", { queue })}>
                       应用到所选屏幕
                       <ArrowRight size={14} />
                     </button>
@@ -1019,13 +1059,23 @@ function App() {
                       <div>
                         <strong>{j.name}</strong>
                         <small>
-                          {j.error ||
+                          {j.error || (j.status==="done"&&j.processingLabel?"已完成 · "+j.processingLabel:null) || j.phase ||
                             {
                               running: "正在处理，请保持管理服务运行",
                               done: "已完成",
                               error: "处理失败",
                             }[j.status]}
                         </small>
+                        {j.status==="running"&&j.durationSeconds>0&&(
+                          <small>已处理 {clock(j.processedSeconds)} / {clock(j.durationSeconds)}
+                            {j.speed>0?` · ${j.speed.toFixed(1)}×`:""}
+                            {j.etaSeconds>0?` · 本阶段约剩 ${clock(j.etaSeconds)}`:""}
+                          </small>
+                        )}
+                        {j.status==="running"&&j.totalFiles>0&&(
+                          <small>{j.filesDone??0} / {j.totalFiles} 个文件 · {bytes(j.uploadedBytes??0)} / {bytes(j.totalBytes??0)}</small>
+                        )}
+                        {j.status==="running"&&j.detail&&j.phase?.includes("转码")&&<small>{j.detail}</small>}
                       </div>
                       <progress value={j.progress} max="100" />
                       <Badge tone={j.status === "error" ? "red" : ""}>
@@ -1486,8 +1536,9 @@ function App() {
                   const format = form.elements.format.value;
                   const quality = Number(form.elements.quality.value);
                   const imageSeconds=Number(form.elements.imageSeconds.value);
+                  const preserveHevc=format==="hls"&&form.elements.videoMode.value==="hevc";
                   setModal(null);
-                  await uploadFiles([...files], format, quality, imageSeconds);
+                  await uploadFiles([...files], format, quality, imageSeconds, preserveHevc);
                 }}
               >
                 <label className="upload-drop">
@@ -1516,6 +1567,7 @@ function App() {
                     <option value="mp4">MP4 · 兼容编码 / 快速起播</option>
                   </select>
                 </label>
+                <label className="field">HLS 视频编码策略<select name="videoMode" defaultValue="compatible"><option value="compatible">兼容 H.264 · 网页与 MC</option><option value="hevc">保留原 H.265 · MC 优先</option></select><small>保留 HEVC 仅对 HLS 视频生效，不重新压缩。请选择不低于原片的清晰度；网页预览取决于浏览器解码支持。</small></label>
                 <p className="muted">
                   {data.settings.r2.configured
                     ? "处理完成后自动分片上传至 R2"
@@ -1602,7 +1654,7 @@ function App() {
                       name="width"
                       type="number"
                       min="4"
-                      max="32"
+                      max="100"
                       defaultValue="12"
                     />
                   </label>
@@ -1640,7 +1692,7 @@ function App() {
                           name="width"
                           type="number"
                           min="4"
-                          max="32"
+                          max="100"
                           defaultValue={s.width}
                         />
                       </label>
@@ -1663,6 +1715,10 @@ function App() {
                       <label className="field">
                         点播预读上限（秒）
                         <input name="cacheSeconds" type="number" min="30" max="3600" defaultValue={s.cacheSeconds || s.policy?.cacheSeconds || 1200} />
+                      </label>
+                      <label className="field">
+                        游戏播放音量（0 为静音）
+                        <input name="volume" type="number" min="0" max="100" step="1" defaultValue={s.volume ?? s.policy?.volume ?? 100}/>
                       </label>
                       <label className="field">
                         点播起播缓冲（秒）
@@ -1698,8 +1754,9 @@ function App() {
                       />
                       无人时暂停，有观众进入后恢复
                     </label>
+                    <label className="check-field"><input name="suppressMusic" type="checkbox" defaultChecked={s.suppressMusic ?? s.policy?.suppressMusic ?? true}/>观影时关闭游戏背景音乐，保留其他游戏音效</label>
                     <p className="muted">
-                      清晰度切换会重新缓冲，视频源分辨率决定真实细节。服务器重启后保持暂停。直播延迟受分片和缓冲影响。
+                      音频设置需要 0.4.1 或更新客户端。清晰度切换会重新缓冲，视频源分辨率决定真实细节。服务器重启后保持暂停。直播延迟受分片和缓冲影响。
                     </p>
                     <button className="primary full" type="submit">
                       保存并应用
