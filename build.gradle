@@ -1,5 +1,5 @@
 plugins {
-    id 'net.fabricmc.fabric-loom' version '1.15.5'
+    id 'net.fabricmc.fabric-loom' version '1.17.20'
     id 'maven-publish'
 }
 version = '0.4.7'
@@ -17,6 +17,9 @@ dependencies {
 }
 loom {
     splitEnvironmentSourceSets()
+    // RenderType's constructor is private and create(...) is package-private in
+    // 26.1.2; widen both so the screen RenderType can be built from dev.cinemar2.client.
+    accessWidenerPath = file('src/main/resources/cinemar2.accesswidener')
     mods { cinemar2 { sourceSet sourceSets.main; sourceSet sourceSets.client } }
 }
 processResources { inputs.property 'version', project.version; filesMatching('fabric.mod.json') { expand version: project.version } }

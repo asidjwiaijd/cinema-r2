@@ -1,1 +1,5 @@
-{"block.cinemar2.screen":"Cinema Screen Controller"}
+{
+  "block.cinemar2.screen": "Cinema Screen Controller",
+  "key.cinemar2.debug.place": "Place Debug Screen",
+  "key.cinemar2.debug.screenshot": "Debug Screenshot"
+}

@@ -35,6 +35,7 @@ public final class CinemaClient implements ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(Packets.Audio.ID,(packet,ctx)->ctx.client().execute(()->audio.put(packet.pos(),packet)));
         BlockEntityRenderers.register(CinemaMod.ENTITY, CinemaRenderer::new);
         CinemaRenderer.installRemoteRendering();
+        CinemaDebug.install();
         ClientPlayNetworking.registerGlobalReceiver(Packets.State.ID, (packet, ctx) -> ctx.client().execute(() -> {
             var old = views.get(packet.pos());
             if (old != null && packet.revision() < old.state().revision()) return;

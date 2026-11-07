@@ -1,1 +1,5 @@
-{"block.cinemar2.screen":"影院屏幕控制器"}
+{
+  "block.cinemar2.screen": "影院屏幕控制器",
+  "key.cinemar2.debug.place": "放置调试屏幕",
+  "key.cinemar2.debug.screenshot": "调试截图"
+}
