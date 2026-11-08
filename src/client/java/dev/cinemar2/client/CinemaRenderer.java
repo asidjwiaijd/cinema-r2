@@ -113,6 +113,8 @@ public final class CinemaRenderer implements BlockEntityRenderer<CinemaEntity,Ci
         if(IrisCompatibility.shadersActive())return net.minecraft.client.renderer.rendertype.RenderTypes.entityTranslucent(texture);
         var type=types.get(texture);
         if(type==null){
+            // Fabric API's fabric-transitive-access-wideners-v1 makes this
+            // package-private vanilla factory accessible to dependent mods.
             type=RenderType.create("cinema_screen",RenderSetup.builder(SCREEN).withTexture("Sampler0",texture).createRenderSetup());
             types.put(texture,type);
             if(types.size()>8)types.remove(types.keySet().iterator().next());

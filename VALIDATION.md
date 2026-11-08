@@ -263,3 +263,10 @@ Node 13 项通过，React 生产构建通过。MediaRelayTest 17 项和 VodSegme
 - 常规构建 62 项测试中 43 通过、19 个外部环境测试跳过，无失败。另行启用真实精简 libmpv 的 NativeRuntimeTest 与像素测试，共 5 项通过、无跳过；覆盖常用视频/音频、HLS、硬件解码、音量及实际视频帧的 alpha 检查。
 - 证据：dist/iris-0.4.7-validation.json、dist/iris-0.4.7-before.png、dist/iris-0.4.7-after-white.png、dist/iris-0.4.7-after-bars.png、dist/iris-0.4.7-foreground.png。模组及 sources JAR 已构建；安装器和 PCL 构建器版本同步为 0.4.7。测试服务均已停止，未替换生产玩家实例或重启生产后台。
 - 仅客户端需要更新。光影包仍能改变色调、曝光、雾和远距离可见性；未验证所有光影包、未做新的多人负载测试，未修改已知 CDN 补片超时策略。
+
+## 干净检出与访问权限审查 · 2026-11-08
+
+- 从 GitHub 重新浅克隆 91661c51f8ddddf2733c178603c28f2910e1a3fc，指定全新、初始为空的 Gradle 用户缓存，使用 Java 25、Gradle 9.4.0，执行 `build --no-daemon --no-build-cache`。8 个任务全部实际执行，构建成功；62 项测试中 43 通过、19 个外部环境测试跳过，无失败。
+- 原版 `RenderType.create(String, RenderSetup)` 是包级私有。Fabric API 0.155.3+26.1.2 内含的 `fabric-transitive-access-wideners-v1` 8.1.3+3ff549fb4c 使用 `transitive-accessible method` 公开该工厂。Loom 编译时应用此依赖的声明，Loader 运行时应用；本项目无自有 access widener 是预期状态，并非遗漏文件或依赖本机手工修改的 Minecraft JAR。
+- 干净构建的所有 `.class` 与已发布 0.4.7 JAR 逐文件一致。只有少量文本资源的 LF/CRLF 不同，未发现缺失条目或未提交的代码差异。证据保存在 `.tools/clean-build-20261108/audit.json`；隔离目录与依赖缓存不提交。
+- 已补充调用处注释与 README 构建说明。本次不改变程序行为，也不重复发布相同版本二进制。

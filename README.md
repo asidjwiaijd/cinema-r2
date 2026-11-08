@@ -69,6 +69,8 @@ npm test
 
 Fabric 模组输出到 `build/libs`；网页静态文件输出到 `console/dist`。libmpv 原生库单独安装，不在模组或源码包中分发。媒体集成测试需要真实原生库及测试输入；请按验证文档选择测试，不要将公网播放验证当作压测。
 
+`RenderType.create(String, RenderSetup)` 在原版 26.1.2 中是包级私有。构建依赖的 Fabric API `0.155.3+26.1.2` 通过其 `fabric-transitive-access-wideners-v1` 模块的 [Class Tweaker 声明](https://github.com/FabricMC/fabric/blob/0.155.3%2B26.1.2/fabric-transitive-access-wideners-v1/src/main/resources/fabric-transitive-access-wideners-v1.classtweaker) 将该方法转递公开；Loom 在编译时应用，Fabric Loader 在运行时应用。因此这里不需要项目自己的 access widener，也不依赖 Iris 来公开该方法。构建和运行均应保留匹配的完整 Fabric API。
+
 运行时需要自行配置管理密码、桥接令牌、媒体域名和 R2 凭据。仓库不包含这些凭据、视频素材、世界存档或本地部署数据。现有部署说明中的域名、磁盘路径和 IP 是当前环境记录，其他部署需自行替换。
 
 本项目为独立实现，参考 DreamDisplays 的游戏屏幕播放思路及 HiRender P1 的管理工作流。项目代码采用 MIT 许可证，第三方库和播放器依各自许可证使用。
